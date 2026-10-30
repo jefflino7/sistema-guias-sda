@@ -8,7 +8,7 @@ da planilha recebida por e-mail até a guia pronta para o sindicato – com cont
 </p>
 
 <p align="center">
-<a href="https://SEU-USUARIO.github.io/sistema-guias-sda/"><b>▶ Testar a demonstração online</b></a> ·
+<a href="https://jefflino7.github.io/sistema-guias-sda/"><b>▶ Testar a demonstração online</b></a> ·
 <a href="#funcionalidades">Funcionalidades</a> ·
 <a href="#tecnologia">Tecnologia</a> ·
 <a href="#sobre-o-autor">Autor</a>
@@ -76,7 +76,7 @@ Um sistema web que roda no próprio navegador, sem instalação e sem servidor, 
 
 ## Como testar
 
-1. Acesse a **[demonstração online](https://SEU-USUARIO.github.io/sistema-guias-sda/)** (ou baixe o `index.html` e abra no Chrome/Edge).
+1. Acesse a **[demonstração online](https://jefflino7.github.io/sistema-guias-sda/)** (ou baixe o `index.html` e abra no Chrome/Edge).
 2. Clique em **▶ Entrar na demonstração** – são carregados 6 meses de dados fictícios.
 3. Usuários de teste: **Demo Admin** (PIN `1234`), **Demo Financeiro** (`2222`), **Demo Consulta** (`3333`).
 
