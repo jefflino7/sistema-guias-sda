@@ -1,0 +1,37 @@
+# ============================================================
+#  NUNCA enviar para o GitHub: dados de clientes e da operação
+# ============================================================
+
+# Banco de dados do sistema e backups (CNPJs, valores, usuários, auditoria)
+*.json
+SDA_banco_de_dados*
+SDA_backup_*
+SDA_dados*
+
+# Relatórios recebidos por e-mail e planilhas exportadas
+Relatorios/
+*.xlsx
+*.xls
+*.csv
+
+# Extratos bancários (conciliação)
+*.ofx
+
+# Arquivos gerados para o SINDASP (guias)
+SDA_*_*.xml
+SDA_*_*.txt
+SDA_lote_*.zip
+SINDASP_clientes_*.txt
+
+# Código de recuperação do administrador e capturas com dados reais
+*[Rr]ecupera*
+*Despachante_dentro_da_empresa*
+*MODELO_BOLETO*
+*DISTRIBICAO_DE_SDA*
+
+# Pastas pessoais e lixo do sistema
+Jeff/
+~$*
+Thumbs.db
+desktop.ini
+.DS_Store
