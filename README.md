@@ -47,6 +47,8 @@ Um sistema web que roda no próprio navegador, sem instalação e sem servidor, 
 | 💰 **Controle de pagamentos** e **conciliação bancária** por extrato OFX/CSV | 📊 **Dashboard interativo** com filtros por período e por despachante |
 | 📅 **Relatório mensal** por despachante em Excel (uma aba cada) ou PDF | 🔐 **Login com PIN** e perfis (Administrador, Financeiro, Consulta) |
 | 📜 **Auditoria** completa – quem importou, distribuiu, gerou ou pagou | 🔔 **Resumo do dia** ao entrar: guias vencidas, pendências, recados da gestão |
+| 🔎 **Conferência na importação**: avisa processos já importados, com guia gerada, retificados ou repetidos antes de gravar | ⭐ **Regras por cliente**: valor fixo ou "não recolher", inclusive só para um despachante |
+| 🏛️ **Dois layouts de sindicato** (São Paulo e Santos) e exportação do cadastro de clientes | 🔄 **Vários usuários** no mesmo banco, com junção automática das alterações |
 
 ### Telas
 

@@ -188,7 +188,11 @@ input:disabled,select:disabled,textarea:disabled{background:#f1f4f7;color:#7b879
 const DEFAULT_CONFIG = {
   impPerc: 2, impMin: 723, impMax: 912,
   expModo: 'fixo', expFixo: 615, expPerc: 2, expMin: 0, expMax: 0,
-  banco: '422', diasVenc: 0, usuario: '', bloqueioMin: 30, alertaRelatorio: true, horaRelatorio: '10:00', padraoArquivo: 'DMDRegistrados', filtroExtrato: '',
+  banco: '422', diasVenc: 0, regrasSDA: [
+    {id:'r1', padrao:'ALFA', tipo:'fixo', valor:1500, desp:'', obs:'Exemplo: contrato com valor fixo'},
+    {id:'r2', padrao:'IOTA', tipo:'nao', valor:0, desp:'', obs:'Exemplo: não recolher SDA'},
+    {id:'r3', padrao:'KAPPA', tipo:'nao', valor:0, desp:'d4', obs:'Exemplo: não recolher só com o despachante 4'},
+    {id:'r4', padrao:'DELTA', tipo:'fixo', valor:912, desp:'', obs:'Exemplo: SDA fixo no máximo'}], layoutXML: 'sdas', bancoSdas: '001', linhasSdas: ['Ref. Cliente: {refCliente}','Valor {base}(R$): {valorBase}',''], usuario: '', bloqueioMin: 30, alertaRelatorio: true, horaRelatorio: '10:00', padraoArquivo: 'DMDRegistrados', filtroExtrato: '',
   txtEncoding: 'ansi', txtIncluirDecl: true,
   linhas: ['Ref. Processo: {processo}','Ref. Cliente: {refCliente}','Valor {base}(R$): {valorBase}','House: {house}','Data Registro {tipoDecl}: {dataRegistro}','Número Registro {tipoDecl}: {registro}','','','','','','','','','']
 };
@@ -225,6 +229,11 @@ const brl = n => (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,
 const brl0 = n => (Number(n)||0).toLocaleString('pt-BR',{maximumFractionDigits:0});
 const brlPlain = n => round2(n).toFixed(2).replace('.',',');
 const pad = n => String(n).padStart(2,'0');
+const UFS={AC:'Acre',AL:'Alagoas',AP:'Amapá',AM:'Amazonas',BA:'Bahia',CE:'Ceará',DF:'Distrito Federal',ES:'Espírito Santo',GO:'Goiás',MA:'Maranhão',MT:'Mato Grosso',MS:'Mato Grosso do Sul',MG:'Minas Gerais',PA:'Pará',PB:'Paraíba',PR:'Paraná',PE:'Pernambuco',PI:'Piauí',RJ:'Rio de Janeiro',RN:'Rio Grande do Norte',RS:'Rio Grande do Sul',RO:'Rondônia',RR:'Roraima',SC:'Santa Catarina',SP:'São Paulo',SE:'Sergipe',TO:'Tocantins'};
+/* converte "São Paulo", "sao paulo", "S.P.", "sp" etc. para a sigla oficial (SP); valor desconhecido volta como está */
+function ufSigla(v){ const t=norm(v).replace(/[^A-Z ]/g,'').replace(/\s+/g,' ').trim(); if(!t) return ''; if(UFS[t]) return t; const sem=t.replace(/ /g,''); if(UFS[sem]) return sem;
+  for(const [sg,n] of Object.entries(UFS)) if(norm(n).replace(/[^A-Z ]/g,'')===t) return sg; return String(v||'').trim(); }
+const ufValida = v => !!UFS[v];
 const todayISO = () => { const d=new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
 const thisMonth = () => todayISO().slice(0,7);
 const addDaysISO = (iso, n) => { const [y,m,d]=iso.split('-').map(Number); const dt=new Date(y,m-1,d+Number(n||0)); return `${dt.getFullYear()}-${pad(dt.getMonth()+1)}-${pad(dt.getDate())}`; };
@@ -259,9 +268,12 @@ function fixDB(d){
   d.config = Object.assign(JSON.parse(JSON.stringify(DEFAULT_CONFIG)), d.config||{});
   if(!Array.isArray(d.config.linhas)) d.config.linhas = DEFAULT_CONFIG.linhas.slice();
   while(d.config.linhas.length<15) d.config.linhas.push('');
+  if(!Array.isArray(d.config.regrasSDA)) d.config.regrasSDA=[];
+  if(!Array.isArray(d.config.linhasSdas)) d.config.linhasSdas=DEFAULT_CONFIG.linhasSdas.slice(); while(d.config.linhasSdas.length<3) d.config.linhasSdas.push('');
   ['processos','clientes','lotes','importacoes','arquivosLidos','conciliados','usuarios','auditoria','recados'].forEach(k=>{ if(!Array.isArray(d[k])) d[k]=[]; });
   if(!d.relExportados || typeof d.relExportados!=='object') d.relExportados={};
   if(!d.excluidos || typeof d.excluidos!=='object') d.excluidos={};
+  d.clientes.forEach(c=>{ if(c && c.uf){ const sg=ufSigla(c.uf); if(sg!==c.uf) c.uf=sg; } });
   // completa campos de versões anteriores
   d.processos.forEach(p=>{ if(p.status==='gerado' && !p.dataGeracao){ const l=d.lotes.find(x=>x.id===p.loteId); p.dataGeracao = l ? l.data : (p.criado||new Date().toISOString()); p.venc = p.venc || (l&&l.venc) || ''; } });
   return d;
@@ -330,11 +342,18 @@ function mergeDB(local, remoto){
   return out;
 }
 const assinatura = () => (DB.auditoria[0]||{}).id+'|'+DB.processos.length+'|'+DB.lotes.length+'|'+DB.processos.reduce((m,p)=>(p.upd||'')>m?p.upd:m,'');
+function bancoDesativado(obj){
+  if(!obj || !obj.desativado) return false;
+  state.fileHandle=null; state.pendingHandle=null; state.bancoDesativado=true; idbDel('h','dados'); state.fileStatus='';
+  setTimeout(()=>{ alert('O arquivo de banco de dados que este computador usava foi DESATIVADO.\n\n'+(obj.motivo||'')+'\n\nClique em "Abrir o banco de dados da equipe" e escolha: '+(obj.oficial||'Automacao\\SDA_banco_de_dados.json')); render(); }, 50);
+  return true;
+}
 async function syncFromFile(){
   if(!state.fileHandle) return false;
   const cur=await state.fileHandle.getFile();
   if(state.fileMtime && cur.lastModified > state.fileMtime + 1000){
     const txt=await cur.text(); state.fileMtime=cur.lastModified;
+    if(txt.trim() && bancoDesativado(JSON.parse(txt))) return false;
     if(txt.trim()){ const antes=assinatura(); stampChanges(); DB = mergeDB(DB, JSON.parse(txt)); takeSnapshot();
       try{ await idbSet('kv','db', JSON.parse(JSON.stringify(DB))); }catch(e){}
       if(assinatura()!==antes){ state.ultimaSync=new Date(); toast('🔄 Atualizado com alterações feitas por outro usuário.'); return true; } }
@@ -348,7 +367,7 @@ document.addEventListener('focusout', ()=>{ if(state.renderPend){ state.renderPe
 const desconectado = () => false; /* demonstração: sem banco compartilhado */
 function confirmaDesconectado(){ return !desconectado() || confirm('ATENÇÃO: este computador está DESCONECTADO do banco de dados compartilhado.\nO que você fizer agora fica só neste navegador e NÃO aparece para os outros usuários.\n\nClique em Cancelar e use "Reconectar" (recomendado), ou OK para continuar mesmo assim.'); }
 async function writeLinkedFile(){
-  try{ await syncFromFile();
+  try{ await syncFromFile(); if(!state.fileHandle) return;
     const w = await state.fileHandle.createWritable(); await w.write(JSON.stringify(DB)); await w.close();
     state.fileMtime=(await state.fileHandle.getFile()).lastModified; state.fileStatus='salvo às '+new Date().toLocaleTimeString('pt-BR');
     try{ await idbSet('kv','db', JSON.parse(JSON.stringify(DB))); }catch(e){} }
@@ -362,26 +381,79 @@ async function loadDB(){
 }
 async function linkNewFile(){
   if(!guard('*')) return;
+  if(!confirm('Criar um arquivo de banco de dados NOVO?\n\nUse isto só na primeira instalação. Se a equipe já usa o sistema, cancele e use "Conectar à pasta do sistema" – senão o seu trabalho fica num banco separado.')) return;
   if(!window.showSaveFilePicker){ alert('Use Google Chrome ou Microsoft Edge para vincular o arquivo de dados.'); return; }
   try{ const h = await showSaveFilePicker({suggestedName:'SDA_banco_de_dados.json', types:[{description:'Banco de dados SDA',accept:{'application/json':['.json']}}]});
     state.fileHandle=h; state.pendingHandle=null; try{ await idbSet('h','dados',h); }catch(e){} await writeLinkedFile(); toast('Arquivo de banco de dados vinculado. Tudo será salvo nele automaticamente.'); render(); }catch(e){}
 }
 async function linkExistingFile(){
-  if(DB.usuarios.length && !guard('arquivo')) return;
+  if(state.user && !guard('arquivo')) return;
   if(!window.showOpenFilePicker){ alert('Use Google Chrome ou Microsoft Edge para vincular o arquivo de dados.'); return; }
-  try{ const [h] = await showOpenFilePicker({types:[{description:'Banco de dados SDA',accept:{'application/json':['.json']}}]});
-    if (await h.requestPermission({mode:'readwrite'}) !== 'granted') return;
+  let h; try{ [h] = await showOpenFilePicker({types:[{description:'Banco de dados SDA',accept:{'application/json':['.json']}}]}); }catch(e){ return; }
+  await usarArquivoBanco(h);
+}
+async function usarArquivoBanco(h){
+  try{
+    if (await h.requestPermission({mode:'readwrite'}) !== 'granted') return false;
     const fl = await h.getFile(); const txt = await fl.text();
-    if(txt.trim()){ const rem=JSON.parse(txt); const vazio=!DB.usuarios.length && !DB.processos.length && !DB.lotes.length;
-      if(vazio && !(rem.usuarios||[]).length && !confirm('Esse arquivo não tem usuários cadastrados. Abrir mesmo assim?')) return;
-      stampChanges(); DB = vazio ? fixDB(rem) : mergeDB(DB, rem); takeSnapshot(); }
-    state.fileHandle=h; state.fileMtime=fl.lastModified; state.pendingHandle=null; try{ await idbSet('h','dados',h); }catch(e){} save(); state.fileStatus='carregado'; toast('Banco de dados carregado do arquivo.'); render();
-  }catch(e){ if(e && e.name!=='AbortError') alert('Não foi possível abrir: '+e.message); }
+    if(txt.trim()){ const rem=JSON.parse(txt);
+      if(rem.desativado){ alert('Este arquivo de banco de dados foi DESATIVADO.\n\n'+(rem.motivo||'')+'\n\nUse "Conectar à pasta do sistema" e escolha a pasta "SDA - Sistema Emissão de Guia".'); return false; }
+      if(!(rem.usuarios||[]).length && !confirm('Esse arquivo não tem usuários cadastrados. Abrir mesmo assim?')) return false;
+      const vazio=!DB.usuarios.length && !DB.processos.length && !DB.lotes.length;
+      const comum=(rem.usuarios||[]).some(u=>DB.usuarios.some(x=>x.id===u.id));
+      let substituir = vazio || !state.user;
+      if(!substituir && !comum){ if(!confirm('Os usuários deste computador não existem no banco escolhido (são bancos diferentes).\n\nOK = usar o banco escolhido (os dados deste computador ficam guardados como cópia de segurança no navegador).\nCancelar = não abrir.')) return false; substituir=true; }
+      if(substituir && (DB.usuarios.length||DB.processos.length)){ try{ await idbSet('kv','db_copia_'+nowStamp(), JSON.parse(JSON.stringify(DB))); }catch(e){} }
+      stampChanges(); DB = substituir ? fixDB(rem) : mergeDB(DB, rem); takeSnapshot();
+      if(substituir){ state.user=null; sessionStorage.removeItem('sda_uid'); } }
+    state.fileHandle=h; state.fileMtime=fl.lastModified; state.pendingHandle=null; state.bancoDesativado=false; try{ await idbSet('h','dados',h); }catch(e){} save(); state.fileStatus='carregado'; toast('Banco de dados da equipe conectado.'); render();
+    return true;
+  }catch(e){ if(e && e.name!=='AbortError') alert('Não foi possível abrir: '+e.message); return false; }
+}
+/* ---- conectar à PASTA do sistema: acha sozinho o banco oficial e a pasta de relatórios ---- */
+const NOME_BANCO='SDA_banco_de_dados.json';
+async function lerPastaSistema(raiz){
+  let auto=null, arq=null, rel=null; const extras=[];
+  try{ auto=await raiz.getDirectoryHandle('Automacao'); }catch(e){}
+  if(auto){ try{ arq=await auto.getFileHandle(NOME_BANCO); }catch(e){} }
+  if(!arq && /^automa/i.test(raiz.name)){ try{ arq=await raiz.getFileHandle(NOME_BANCO); }catch(e){} }
+  try{ rel=await raiz.getDirectoryHandle('Relatorios'); }catch(e){}
+  if(auto){ try{ for await (const [n,e] of raiz.entries()){ if(e.kind==='file' && /\.json$/i.test(n) && /banco|sda_dados/i.test(n)) extras.push(n); } }catch(e){} }
+  return {auto, arq, rel, extras};
+}
+async function aplicarPastaSistema(raiz, silencioso){
+  const {arq, rel, extras}=await lerPastaSistema(raiz);
+  if(!arq){ if(!silencioso) alert(`Não encontrei o banco de dados da equipe na pasta "${raiz.name}".\n\nEscolha a pasta "SDA - Sistema Emissão de Guia" – a que tem dentro a pasta Automacao com o arquivo ${NOME_BANCO}.`); return false; }
+  const ok = await usarArquivoBanco(arq); if(!ok) return false;
+  state.raiz=raiz; state.raizPend=null; try{ await idbSet('h','raiz',raiz); }catch(e){}
+  if(rel){ state.pasta=rel; state.pastaPend=null; try{ await idbSet('h','pasta',rel); }catch(e){} }
+  state.extras=extras; return true;
+}
+async function conectarPasta(){
+  if(!window.showDirectoryPicker){ alert('Use Google Chrome ou Microsoft Edge.'); return; }
+  if(state.user && !guard('arquivo')) return;
+  let raiz; try{ raiz=await showDirectoryPicker({id:'sdaSistema', mode:'readwrite'}); }catch(e){ return; }
+  if(await aplicarPastaSistema(raiz)){
+    toast(`✅ Conectado à pasta <b>${esc(raiz.name)}</b>.<br>Banco de dados da equipe${state.pasta?' e leitura automática da pasta Relatorios':''} ligados.`+(state.extras&&state.extras.length?`<br>⚠ Há arquivo(s) de banco solto(s) na pasta principal: ${state.extras.map(esc).join(', ')} – podem ser apagados.`:''), 8000);
+    render(); if(state.user && state.pasta) setTimeout(()=>scanPasta(false),600);
+  }
+}
+async function reconectarRaiz(){ /* um único "Permitir" religa banco + relatórios */
+  const r=state.raizPend||state.raiz; if(!r) return false;
+  try{ if(await r.requestPermission({mode:'readwrite'})!=='granted') return false; }catch(e){ return false; }
+  const {arq, rel, extras}=await lerPastaSistema(r); if(!arq) return false;
+  const fl=await arq.getFile(); const t=await fl.text(); const o=t.trim()?JSON.parse(t):null;
+  if(o && o.desativado){ bancoDesativado(o); return false; }
+  if(o){ stampChanges(); DB=mergeDB(DB,o); takeSnapshot(); }
+  state.fileHandle=arq; state.fileMtime=fl.lastModified; state.pendingHandle=null; state.bancoDesativado=false; state.fileStatus='conectado';
+  if(rel){ state.pasta=rel; state.pastaPend=null; }
+  state.raiz=r; state.raizPend=null; state.extras=extras; return true;
 }
 async function reconnectFile(){
+  if(state.raizPend){ if(await reconectarRaiz()){ save(); render(); if(state.user && state.pasta) scanPasta(false); return; } }
   const h = state.pendingHandle || await idbGet('h','dados'); if(!h) return;
   try{ if (await h.requestPermission({mode:'readwrite'})==='granted'){
-      const fl = await h.getFile(); const txt = await fl.text(); if (txt.trim()){ stampChanges(); DB = mergeDB(DB, JSON.parse(txt)); takeSnapshot(); }
+      const fl = await h.getFile(); const txt = await fl.text(); if(txt.trim() && bancoDesativado(JSON.parse(txt))) return; if (txt.trim()){ stampChanges(); DB = mergeDB(DB, JSON.parse(txt)); takeSnapshot(); }
       state.fileHandle=h; state.fileMtime=fl.lastModified; state.pendingHandle=null; save(); state.fileStatus='conectado'; render(); } }
   catch(e){ alert('Falha ao reconectar: '+e.message); }
 }
@@ -392,7 +464,15 @@ function importBackup(file){ if(!guard('*')) return; const r=new FileReader(); r
 /* ---------------- regras de negócio ---------------- */
 function tipoPorProcesso(proc){ const pre=(String(proc).split(/[-\s/]/)[0]||'').toUpperCase(); return (pre.includes('E') && !pre.includes('I')) ? 'E' : 'I'; }
 function tipoDecl(p){ if(p.tipo==='E') return 'DUE'; const r=String(p.registro||'').trim(); return /^\d{10}$/.test(r) ? 'DI' : 'DUIMP'; }
+/* regras especiais por cliente (Configurações ▸ Regras especiais de SDA) */
+function textoCliente(nomeRel){ const c=DB.clientes.find(x=>norm(x.nome)===norm(nomeRel)); return norm(nomeRel)+' | '+norm(c&&c.razao||''); }
+function regraCliente(nomeRel, despId){ const t=textoCliente(nomeRel);
+  return (DB.config.regrasSDA||[]).find(r=>r.padrao && t.includes(norm(r.padrao)) && (!r.desp || r.desp===despId)) || null; }
+const regraDe = p => regraCliente(p.importador, p.despId);
+function regrasDoCliente(nomeRel){ const t=textoCliente(nomeRel); return (DB.config.regrasSDA||[]).filter(r=>r.padrao && t.includes(norm(r.padrao))); }
+function regraTxt(r){ if(!r) return ''; const cond=r.desp?` (despachante ${despById(r.desp)?.nome||'?'})`:''; return r.tipo==='fixo' ? `Fixo R$ ${brl(r.valor)}${cond}` : `Não recolher${cond}`; }
 function calcSDA(p){
+  const rg=regraDe(p); if(rg && rg.tipo==='fixo') return round2(rg.valor);
   const c=DB.config;
   if (p.tipo==='E'){ if (c.expModo==='fixo') return round2(c.expFixo);
     let v=round2((Number(p.fob)||0)*Number(c.expPerc)/100); if(Number(c.expMin)>0) v=Math.max(v,Number(c.expMin)); if(Number(c.expMax)>0) v=Math.min(v,Number(c.expMax)); return round2(v); }
@@ -404,7 +484,7 @@ const despNome = id => { const d=despById(id); return d ? `${d.codSDA} – ${d.n
 const despOrdem = () => DB.despachantes.slice().sort((a,b)=>a.codSDA-b.codSDA);
 const despCor = id => { const i = despOrdem().findIndex(d=>d.id===id); return i<0 ? '#94a3b8' : `var(${SERIES[i%SERIES.length]})`; };
 const clienteDe = p => { const k=norm(p.importador); return DB.clientes.find(c=>norm(c.nome)===k) || null; };
-function statusDe(p){ if(p.status==='gerado') return p.pago ? 'pago' : 'gerado'; if(p.status==='ignorado') return 'ignorado'; return p.despId ? 'distribuido' : 'pendente'; }
+function statusDe(p){ if(p.status==='gerado') return p.pago ? 'pago' : 'gerado'; if(p.status==='ignorado') return 'ignorado'; if(regraDe(p)?.tipo==='nao') return 'ignorado'; return p.despId ? 'distribuido' : 'pendente'; }
 const STATUS_TXT = {pendente:'Aguardando distribuição', distribuido:'Distribuído', gerado:'Guia gerada', pago:'Paga', ignorado:'Não gera SDA'};
 const isGerada = p => p.status==='gerado';
 function dataBase(p, base){ return base==='registro' ? (p.dataReg||'') : (p.dataGeracao ? p.dataGeracao.slice(0,10) : ''); }
@@ -449,6 +529,7 @@ function pinDialog(titulo, {atual=false, extra=''}={}){
 }
 function codigoRecuperacao(){ const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; const r=crypto.getRandomValues(new Uint8Array(12)); return [...r].map(x=>a[x%a.length]).join('').replace(/(.{4})(?=.)/g,'$1-'); }
 async function criarPrimeiroAdmin(){
+  if(!confirm('Confirma que esta é a PRIMEIRA instalação do sistema e que ninguém da equipe o usa ainda?\n\nSe a equipe já usa, clique em Cancelar e use "Abrir o banco de dados da equipe".')) return;
   const nome=$('#suNome').value.trim(), p1=$('#suPin').value, p2=$('#suPin2').value;
   if(nome.length<2) return $('#lgErr').textContent='Informe o seu nome.';
   if(!pinOk(p1)) return $('#lgErr').textContent='O PIN precisa ter de 4 a 8 números.';
@@ -463,7 +544,8 @@ function mostrarRecuperacao(rec){
    <div style="font:700 24px Consolas,monospace;text-align:center;letter-spacing:.06em;background:#f3f5f8;border-radius:10px;padding:14px">${rec}</div></div><div class="ft"><button class="b p" onclick="$('#dlg').close()">Anotei</button></div>`; dl.showModal();
 }
 async function doLogin(){
-  if(state.pendingHandle && !state.fileHandle){ try{ const h=state.pendingHandle; if(await h.requestPermission({mode:'readwrite'})==='granted'){ const fl=await h.getFile(); const t=await fl.text(); if(t.trim()){ stampChanges(); DB=mergeDB(DB, JSON.parse(t)); takeSnapshot(); } state.fileHandle=h; state.fileMtime=fl.lastModified; state.pendingHandle=null; state.fileStatus='conectado'; } }catch(e){} }
+  if(state.raizPend && !state.fileHandle){ await reconectarRaiz(); }
+  if(state.pendingHandle && !state.fileHandle){ try{ const h=state.pendingHandle; if(await h.requestPermission({mode:'readwrite'})==='granted'){ const fl=await h.getFile(); const t=await fl.text(); const o=t.trim()?JSON.parse(t):null; if(o && o.desativado){ bancoDesativado(o); return; } if(o){ stampChanges(); DB=mergeDB(DB, o); takeSnapshot(); } state.fileHandle=h; state.fileMtime=fl.lastModified; state.pendingHandle=null; state.fileStatus='conectado'; } }catch(e){} }
   const err=$('#lgErr'); if(Date.now()<state.lockUntil){ err.textContent=`Muitas tentativas. Aguarde ${Math.ceil((state.lockUntil-Date.now())/1000)}s.`; return; }
   const u=DB.usuarios.find(x=>x.id===$('#lgUser').value && x.ativo); const pin=$('#lgPin').value;
   if(!u){ err.textContent='Escolha o usuário.'; return; }
@@ -539,6 +621,7 @@ function pendencias(){
     if(agora.getHours()*60+agora.getMinutes() >= hh*60+(mm||0) && !DB.importacoes.some(i=>(i.data||'').slice(0,10)===hoje && i.novos+i.atual+i.dup>0) && !DB.importacoes.some(i=>new Date(i.data).toDateString()===agora.toDateString()))
       add('importar','orange','📥','Relatório do dia ainda não foi importado',`Já passou das ${DB.config.horaRelatorio}. Importe o relatório de DUIMP/DI registradas recebido por e-mail.`,"go('distribuicao')",'Importar');
   }
+  if(state.extras && state.extras.length) add('*','orange','🗑️',`Arquivo(s) de banco de dados solto(s) na pasta principal`, state.extras.join(', ')+' – o oficial fica em Automacao. Apague esses arquivos para ninguém usar o errado.', "go('config')", 'Entendi');
   if(state.pastaPend) add('importar','orange','📧','Leitura automática da pasta desligada neste computador','O navegador precisa de um clique para voltar a ler a pasta de relatórios.','reconnectPasta()','Reativar');
   const semCod=DB.despachantes.filter(d=>d.ativo && !digits(d.codSindasp));
   if(semCod.length) add('*','orange','👤',`${semCod.length} despachante(s) sem código SINDASP`, semCod.map(d=>d.nome).join(', ')+' – a geração de guias deles fica travada.',"go('despachantes')",'Preencher');
@@ -636,32 +719,109 @@ const COLS = {
   dataReg:['registro','data registro','data de registro','data']
 };
 function mapHeader(hdr){ const H=hdr.map(normH), map={}; for(const [k,alts] of Object.entries(COLS)){ const i=H.findIndex(h=>alts.includes(h)); if(i>=0) map[k]=i; } return map; }
-function importRows(rows, nomeArq, opts={}){
-  if(!opts.quiet && (!guard('importar') || !confirmaDesconectado())) return null;
+/* ---- importação com conferência por processo ---- */
+const CAMPOS_IMP=['importador','refCliente','hawb','mawb','cif','fob','registro','dataReg','tipo'];
+function lerLinhasRelatorio(rows){
   let hi = rows.findIndex(r => r && r.some(c => /importador|exportador/i.test(String(c||'')))); if (hi<0) hi=0;
-  const map = mapHeader(rows[hi]||[]);
-  if (map.processo==null){ if(!opts.quiet) alert('Não encontrei a coluna do Nº do processo ("Codigo") no relatório.'); return null; }
-  let novos=0, dup=0, atual=0, alertas=0; const agora=new Date().toISOString();
+  const map = mapHeader(rows[hi]||[]); if (map.processo==null) return null;
+  const out=[];
   for (const r of rows.slice(hi+1)){
     if(!r || !r[map.processo]) continue;
     const g = k => map[k]!=null ? r[map[k]] : '';
     const p = { processo:String(g('processo')).trim(), importador:String(g('importador')||'').trim(), refCliente:String(g('refCliente')||'').trim(),
       hawb:String(g('hawb')||'').trim(), mawb:String(g('mawb')||'').trim(), cif:round2(parseNum(g('cif'))), fob:round2(parseNum(g('fob'))),
       registro:String(g('registro')||'').trim(), dataReg:parseDateAny(g('dataReg')) };
-    p.tipo = tipoPorProcesso(p.processo);
-    const ex = DB.processos.find(x => x.processo===p.processo && (x.registro===p.registro || !x.registro));
-    if (ex){
-      if (isGerada(ex)){ dup++; if (Math.abs((ex.cif||0)-p.cif)>0.009 || ex.registro!==p.registro){ ex.alerta=`Reimportado em ${isoToBR(agora)} com dados diferentes (CIF ${brl(p.cif)} / reg. ${p.registro}) – verifique retificação.`; alertas++; } continue; }
-      Object.assign(ex, p); atual++;
-    } else { DB.processos.push(Object.assign({id:uid(), despId:'', valorManual:null, status:'', criado:agora, importadoEm:agora, arquivoOrigem:nomeArq||''}, p)); novos++; }
-    ensureCliente(p.importador);
+    p.tipo = tipoPorProcesso(p.processo); out.push(p);
   }
-  DB.importacoes.unshift({id:uid(), data:agora, arquivo:nomeArq||'', novos, atual, dup, usuario:userName(), origem:opts.quiet?'pasta automática':'manual'});
-  log('Importação', `${nomeArq||''} (${opts.quiet?'pasta automática':'manual'}): ${novos} novo(s), ${atual} atualizado(s), ${dup} já com guia${alertas?`, ${alertas} alerta(s)`:''}`);
-  if (opts.quiet){ save(); return {novos, atual, dup, alertas}; }
-  save(); state.tab='distribuicao'; state.f.status='abertos'; render();
+  return out;
+}
+function analisarImportacao(linhas){
+  const vistos=new Set();
+  return linhas.map(p=>{
+    const k=p.processo+'|'+p.registro;
+    if(vistos.has(k)) return {p, cat:'repetidoArq'}; vistos.add(k);
+    const ex = DB.processos.find(x => x.processo===p.processo && (x.registro===p.registro || !x.registro));
+    if(ex){
+      const difs=CAMPOS_IMP.filter(c=> c==='cif'||c==='fob' ? Math.abs((ex[c]||0)-(p[c]||0))>0.009 : String(ex[c]||'')!==String(p[c]||''));
+      if(isGerada(ex)) return {p, ex, cat: difs.some(c=>['cif','fob','registro'].includes(c)) ? 'geradoDif' : 'gerado', difs};
+      return {p, ex, cat:'aberto', difs};
+    }
+    const outraDecl = DB.processos.filter(x => x.processo===p.processo && x.registro && x.registro!==p.registro);
+    if(outraDecl.length) return {p, cat:'outraDecl', outros:outraDecl, incluir:false};
+    const regOutro = p.registro ? DB.processos.filter(x => x.registro===p.registro && x.processo!==p.processo) : [];
+    if(regOutro.length) return {p, cat:'regOutroProc', outros:regOutro, incluir:false};
+    return {p, cat:'novo'};
+  });
+}
+function aplicarImportacao(itens, nomeArq, quiet){
+  const agora=new Date().toISOString(); let novos=0, atual=0, dup=0, alertas=0, iguais=0; const repetidos=[];
+  for(const it of itens){
+    const p=it.p;
+    if(it.cat==='repetidoArq') continue;
+    if(it.cat==='gerado'){ dup++; repetidos.push(p.processo); continue; }
+    if(it.cat==='geradoDif'){ dup++; alertas++; repetidos.push(p.processo); it.ex.alerta=`Reimportado em ${isoToBR(agora)} com dados diferentes (${it.difs.join(', ')}: CIF ${brl(p.cif)} / reg. ${p.registro}) – verifique retificação.`; continue; }
+    if(it.cat==='aberto'){ repetidos.push(p.processo); if(it.difs.length){ Object.assign(it.ex, p); atual++; } else iguais++; ensureCliente(p.importador); continue; }
+    if((it.cat==='outraDecl'||it.cat==='regOutroProc') && !quiet && !it.incluir){ repetidos.push(p.processo); continue; }
+    const novo=Object.assign({id:uid(), despId:'', valorManual:null, status:'', criado:agora, importadoEm:agora, arquivoOrigem:nomeArq||''}, p);
+    if(it.cat==='outraDecl'){ novo.alerta=`Mesmo nº de processo já existia com outra declaração (${it.outros.map(x=>x.registro).join(', ')}) – confira se não é retificação/duplicidade.`; alertas++; }
+    if(it.cat==='regOutroProc'){ novo.alerta=`Mesma declaração ${p.registro} já existia no processo ${it.outros.map(x=>x.processo).join(', ')} – confira duplicidade.`; alertas++; }
+    DB.processos.push(novo); novos++; ensureCliente(p.importador);
+  }
+  DB.importacoes.unshift({id:uid(), data:agora, arquivo:nomeArq||'', novos, atual, dup:dup+iguais, iguais, alertas, repetidos:repetidos.slice(0,300), usuario:userName(), origem:quiet?'pasta automática':'manual'});
+  log('Importação', `${nomeArq||''} (${quiet?'pasta automática':'manual'}): ${novos} novo(s), ${atual} atualizado(s), ${iguais} já importado(s) sem mudança, ${dup} já com guia${alertas?`, ${alertas} alerta(s)`:''}${repetidos.length?` – repetidos: ${repetidos.slice(0,40).join(', ')}`:''}`);
+  save();
+  return {novos, atual, dup:dup+iguais, alertas};
+}
+function importRows(rows, nomeArq, opts={}){
+  if(!opts.quiet && (!guard('importar') || !confirmaDesconectado())) return null;
+  const linhas=lerLinhasRelatorio(rows);
+  if(!linhas){ if(!opts.quiet) alert('Não encontrei a coluna do Nº do processo ("Codigo") no relatório.'); return null; }
+  const itens=analisarImportacao(linhas);
+  if(opts.quiet) return aplicarImportacao(itens, nomeArq, true);
+  abrirConferencia(itens, nomeArq); return true;
+}
+const CAT_INFO={
+  novo:{ic:'🟢',t:'Novos',d:'Serão importados.'},
+  aberto:{ic:'🔵',t:'Já importados – ainda sem guia',d:'Não duplica. Se algum dado mudou, o processo é atualizado.'},
+  gerado:{ic:'🟣',t:'Já importados – guia já gerada',d:'Ignorados (não gera guia de novo).'},
+  geradoDif:{ic:'⚠️',t:'Guia já gerada, mas com dados DIFERENTES',d:'Ignorados e marcados para conferir uma possível retificação.'},
+  outraDecl:{ic:'⚠️',t:'Mesmo nº de processo com OUTRA declaração',d:'Pode ser retificação ou duplicidade – marque só se precisar de uma nova guia.'},
+  regOutroProc:{ic:'⚠️',t:'Mesma declaração em OUTRO nº de processo',d:'Possível duplicidade – marque só se tiver certeza.'},
+  repetidoArq:{ic:'🔁',t:'Repetidos dentro da própria planilha',d:'Considerados uma única vez.'}
+};
+function abrirConferencia(itens, nomeArq){
+  state.conf={itens, nomeArq};
+  const cats=['outraDecl','regOutroProc','geradoDif','gerado','aberto','novo','repetidoArq'];
+  const por=c=>itens.filter(i=>i.cat===c);
+  const anterior=DB.importacoes.find(i=>i.arquivo && i.arquivo===nomeArq);
+  const totalRep=itens.filter(i=>!['novo','repetidoArq'].includes(i.cat)).length, unicos=itens.filter(i=>i.cat!=='repetidoArq').length;
+  const linhaProc=(it,i)=>{ const p=it.p, ex=it.ex, rg=regraCliente(p.importador,'');
+    let info='';
+    if(ex) info = `importado ${ex.importadoEm?new Date(ex.importadoEm).toLocaleDateString('pt-BR'):'—'}${ex.arquivoOrigem?` (${esc(ex.arquivoOrigem)})`:''} • ${STATUS_TXT[statusDe(ex)]}${ex.despId?` – ${esc(despById(ex.despId)?.nome||'')}`:''}${isGerada(ex)?` • guia ${isoToBR(ex.dataGeracao)} R$ ${brl(valorSDA(ex))}`:''}`;
+    if(it.difs && it.difs.length) info += ` • <b>mudou: ${it.difs.map(c=>c==='cif'?`CIF ${brl(ex.cif)} → ${brl(p.cif)}`:c==='registro'?`registro ${esc(ex.registro)} → ${esc(p.registro)}`:c).join(', ')}</b>`;
+    if(it.outros) info = it.outros.map(x=>`${esc(x.processo)} / ${esc(x.registro)} – ${STATUS_TXT[statusDe(x)]}${isGerada(x)?` (guia ${isoToBR(x.dataGeracao)})`:''}`).join('<br>');
+    return `<tr>${it.incluir!==undefined?`<td><input type="checkbox" ${it.incluir?'checked':''} onchange="state.conf.itens[${i}].incluir=this.checked;atualizaBotaoConf()"></td>`:'<td></td>'}<td><b>${esc(p.processo)}</b></td><td>${esc(p.importador)}${rg?` <span class="badge ${rg.tipo==='nao'?'s-ignorado':'s-distribuido'}">${esc(regraTxt(rg))}</span>`:''}</td><td>${esc(p.registro)}</td><td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="small" style="white-space:normal;min-width:260px">${info}</td></tr>`; };
+  const secao=c=>{ const l=por(c); if(!l.length) return ''; const ci=CAT_INFO[c];
+    return `<details ${['novo','gerado','aberto','repetidoArq'].includes(c)&&totalRep>0&&c!=='novo'?'':'open'} style="margin-bottom:10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;${c.startsWith('outra')||c==='regOutroProc'||c==='geradoDif'?'background:#fff8eb':''}">
+      <summary style="cursor:pointer"><b>${ci.ic} ${ci.t}: ${l.length}</b> <span class="muted small">– ${ci.d}</span></summary>
+      <div class="tbl-wrap" style="margin-top:8px;max-height:260px"><table><thead><tr><th></th><th>Processo</th><th>Cliente</th><th>Registro</th><th class="r">CIF/FOB</th><th>Situação no sistema</th></tr></thead><tbody>${l.map(it=>linhaProc(it, itens.indexOf(it))).join('')}</tbody></table></div></details>`; };
+  const dl=$('#dlg'); dl.className='painel'; dl.style.maxWidth='1000px';
+  dl.innerHTML=`<div class="hd">📥 Conferência da importação – ${esc(nomeArq||'relatório')}</div><div style="padding:14px 18px;max-height:70vh;overflow:auto">
+    ${anterior?`<div class="alert w">⚠ Um arquivo com este mesmo nome já foi importado em ${new Date(anterior.data).toLocaleString('pt-BR')}${anterior.usuario?' por '+esc(anterior.usuario):''}.</div>`:''}
+    ${totalRep?`<div class="alert ${itens.some(i=>['outraDecl','regOutroProc','geradoDif'].includes(i.cat))?'e':'i'}"><b>${totalRep} de ${unicos} processo(s) desta planilha já estão no sistema.</b> Eles não serão duplicados. Confira abaixo.</div>`:`<div class="alert o">Todos os ${unicos} processo(s) são novos.</div>`}
+    <div class="chips" style="margin-bottom:12px">${['novo','aberto','gerado','geradoDif','outraDecl','regOutroProc','repetidoArq'].filter(c=>por(c).length).map(c=>`<div class="chip"><span class="muted small">${CAT_INFO[c].ic} ${CAT_INFO[c].t}</span><b>${por(c).length}</b></div>`).join('')}</div>
+    ${cats.map(secao).join('')}
+  </div><div class="ft"><button class="b" onclick="$('#dlg').close()">Cancelar</button><button class="b p" id="btConf" onclick="confirmarImportacao()"></button></div>`;
+  dl.onclose=()=>{ dl.className=''; dl.style.maxWidth=''; state.confAberta=false; };
+  state.confAberta=true; atualizaBotaoConf(); if(!dl.open) dl.showModal();
+}
+function atualizaBotaoConf(){ const it=state.conf.itens; const n=it.filter(i=>i.cat==='novo'||((i.cat==='outraDecl'||i.cat==='regOutroProc')&&i.incluir)).length; const a=it.filter(i=>i.cat==='aberto'&&i.difs.length).length;
+  const b=$('#btConf'); if(b){ b.textContent = n||a ? `Importar ${n} novo(s)${a?` e atualizar ${a}`:''}` : 'Nada novo – registrar e fechar'; } }
+function confirmarImportacao(){
+  const {itens, nomeArq}=state.conf; const r=aplicarImportacao(itens, nomeArq, false); $('#dlg').close();
+  state.tab='distribuicao'; state.f.status='abertos'; render();
   const sem = DB.clientes.filter(c=>!digits(c.doc)).length;
-  toast(`<b>Relatório importado.</b><br>${novos} novo(s), ${atual} atualizado(s), ${dup} já com guia (ignorados).` + (alertas?`<br>⚠ ${alertas} processo(s) já gerados vieram com dados diferentes – veja no Banco de dados.`:'') + (sem?`<br>⚠ ${sem} cliente(s) sem CNPJ.`:''), 7000);
+  toast(`<b>Importação concluída.</b><br>${r.novos} novo(s), ${r.atual} atualizado(s), ${r.dup} já existente(s) não duplicado(s).`+(r.alertas?`<br>⚠ ${r.alertas} alerta(s) de retificação/duplicidade – veja no Banco de dados.`:'')+(sem?`<br>⚠ ${sem} cliente(s) sem CNPJ.`:''), 7000);
 }
 function readSheetFile(file, cb){
   if(!window.XLSX){ alert('A biblioteca de planilhas não carregou. Verifique a internet e recarregue a página (F5).'); return; }
@@ -720,6 +880,7 @@ function validarDesp(d, procs){
   for(const p of procs){
     const c=clienteDe(p);
     if(!c || !digits(c.doc)) erros.push(`${esc(p.processo)} – cliente <b>${esc(p.importador)}</b> sem CNPJ/CPF (aba Clientes).`);
+    else if(c.uf && !ufValida(ufSigla(c.uf))) avisos.push(`${esc(p.processo)} – UF "${esc(c.uf)}" de ${esc(p.importador)} não reconhecida (vai em branco na guia).`);
     else if(!docValido(c.doc)) avisos.push(`${esc(p.processo)} – CNPJ/CPF de ${esc(p.importador)} parece inválido (${fmtDoc(c.doc)}).`);
     if(valorSDA(p) < 150) erros.push(`${esc(p.processo)} – valor R$ ${brl(valorSDA(p))} abaixo do mínimo aceito pelo SINDASP (R$ 150,00).`);
     if(!p.registro) erros.push(`${esc(p.processo)} – sem número de registro da ${tipoDecl(p)}.`);
@@ -728,15 +889,40 @@ function validarDesp(d, procs){
   return {erros, avisos};
 }
 const xe = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+/* número da declaração: DI no formato 26/0930664-3; DUIMP e DUE como vieram */
+function fmtDecl(p){ const r=String(p.registro||'').trim(); const dg=digits(r); if(tipoDecl(p)==='DI' && dg.length===10) return `${dg.slice(0,2)}/${dg.slice(2,9)}-${dg.slice(9)}`; return r; }
+function linhasSdasGuia(p){ const ph=placeholders(p); return DB.config.linhasSdas.slice(0,3).map(t => String(t||'').replace(/\{(\w+)\}/g,(m,k)=> ph[k]!=null ? ph[k] : m).slice(0,60)); }
+const linhasAtivas = p => DB.config.layoutXML==='sdas' ? linhasSdasGuia(p) : linhasGuia(p);
+/* layout do Sindicato dos Despachantes Aduaneiros de Santos (sindicato.sdas.org.br)
+   – igual ao sistema que já funciona lá: MAIÚSCULAS sem acento, campos com tamanho fixo (completados com espaços) */
+const sdasTxt = v => String(v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/[^\x20-\x7E]/g,' ').replace(/\s+/g,' ').trim().replace(/[\s\-–,;]+$/,'');
+const fixo = (v,n) => xe(sdasTxt(v).slice(0,n).padEnd(n,' '));
+function gerarXMLSdas(d, procs, venc){
+  let x='<?xml version="1.0" encoding="UTF-8"?><GRH><DESPACHANTE>'+`<DESPACHANTECODIGO>${digits(d.codSindasp)}</DESPACHANTECODIGO><DESPACHANTECPF>${digits(d.cpf)}</DESPACHANTECPF></DESPACHANTE><GRHs>`;
+  for(const p of procs){
+    const c=clienteDe(p)||{}; const doc=digits(c.doc); const lin=linhasSdasGuia(p);
+    x+='<GRHDETALHES>'+`<IETIPODOC>${doc.length===11?'CPF':'CNPJ'}</IETIPODOC><IEDOC>${doc}</IEDOC>`+
+      `<IENOME>${fixo(c.razao||c.nome||p.importador,60)}</IENOME><IEENDERECO>${fixo(c.endereco,60)}</IEENDERECO>`+
+      `<IECIDADE>${fixo(c.cidade,30)}</IECIDADE><IEBAIRRO>${fixo(c.bairro,30)}</IEBAIRRO>`+
+      `<IECEP>${digits(c.cep).slice(0,8)}</IECEP><IEESTADO>${ufValida(ufSigla(c.uf))?ufSigla(c.uf):''}</IEESTADO>`+
+      `<GUIATIPO>${p.tipo==='E'?'E':'I'}</GUIATIPO><GUIAREGISTRO>${isoToBR(p.dataReg)}</GUIAREGISTRO><GUIADECLARACAO>${xe(fmtDecl(p).slice(0,30))}</GUIADECLARACAO>`+
+      `<GUIACONHECIMENTO>${xe(String(p.hawb||'').slice(0,30))}</GUIACONHECIMENTO><GUIAREFERENCIA>${xe(String(p.processo||'').slice(0,30))}</GUIAREFERENCIA>`+
+      `<GUIACHEGADA>${p.dataChegada?isoToBR(p.dataChegada):''}</GUIACHEGADA><GUIAVEICULO>${' '.repeat(30)}</GUIAVEICULO>`+
+      lin.map((t,i)=>`<GUIALINHA${i+1}>${xe(String(t).slice(0,60).padEnd(60,' '))}</GUIALINHA${i+1}>`).join('')+
+      `<GUIAVALOR>${valorSDA(p).toFixed(2)}</GUIAVALOR><GUIABANCO>${DB.config.bancoSdas||'001'}</GUIABANCO><GUIAVENCIMENTO>${venc}</GUIAVENCIMENTO></GRHDETALHES>`;
+  }
+  return x+'</GRHs></GRH>';
+}
 function gerarXML(d, procs, venc){
+  if(DB.config.layoutXML==='sdas') return gerarXMLSdas(d, procs, venc);
   const L=['<?xml version="1.0" encoding="utf-8"?>','<GRH xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">',
     '  <DESPACHANTE>',`    <DESPACHANTECODIGO>${digits(d.codSindasp)}</DESPACHANTECODIGO>`,`    <DESPACHANTECPF>${digits(d.cpf)}</DESPACHANTECPF>`,'  </DESPACHANTE>','  <GRHs>'];
   for(const p of procs){
     const c=clienteDe(p)||{}; const doc=digits(c.doc);
     L.push('    <GRHDETALHES>',`      <IETIPODOC>${doc.length===11?'CPF':'CNPJ'}</IETIPODOC>`,`      <IEDOC>${doc}</IEDOC>`,
-      `      <IENOME>${xe(String(c.razao||c.nome||p.importador).slice(0,60))}</IENOME>`,`      <IEENDERECO>${xe(String(c.endereco||'').slice(0,60))}</IEENDERECO>`,
-      `      <IECIDADE>${xe(String(c.cidade||'').slice(0,30))}</IECIDADE>`,`      <IEBAIRRO>${xe(String(c.bairro||'').slice(0,30))}</IEBAIRRO>`,
-      `      <IECEP>${digits(c.cep).slice(0,8)}</IECEP>`,`      <IEESTADO>${xe(String(c.uf||'').toUpperCase().slice(0,2))}</IEESTADO>`,
+      `      <IENOME>${xe(sdasTxt(c.razao||c.nome||p.importador).slice(0,60))}</IENOME>`,`      <IEENDERECO>${xe(sdasTxt(c.endereco).slice(0,60))}</IEENDERECO>`,
+      `      <IECIDADE>${xe(sdasTxt(c.cidade).slice(0,30))}</IECIDADE>`,`      <IEBAIRRO>${xe(sdasTxt(c.bairro).slice(0,30))}</IEBAIRRO>`,
+      `      <IECEP>${digits(c.cep).slice(0,8)}</IECEP>`,`      <IEESTADO>${ufValida(ufSigla(c.uf))?ufSigla(c.uf):''}</IEESTADO>`,
       `      <GUIATIPO>${p.tipo==='E'?'E':'I'}</GUIATIPO>`,`      <GUIADECLARACAO>${xe(String(p.registro).slice(0,30))}</GUIADECLARACAO>`,`      <GUIAVENCIMENTO>${venc}</GUIAVENCIMENTO>`);
     linhasGuia(p).forEach((t,i)=>L.push(`      <GUIALINHA${i+1}>${xe(t)}</GUIALINHA${i+1}>`));
     L.push(`      <GUIAVALOR>${valorSDA(p).toFixed(2)}</GUIAVALOR>`,`      <GUIABANCO>${DB.config.banco}</GUIABANCO>`,'    </GRHDETALHES>');
@@ -778,6 +964,15 @@ async function gerar(despIds, zip){
   else todos.forEach((a,i)=>setTimeout(()=>download(a.nome, bytesDe(a)), i*400));
   render(); toast(`✅ ${lotes.reduce((s,l)=>s+l.qtd,0)} guia(s) gerada(s) em ${lotes.length} arquivo(s) e gravadas no banco de dados.<br>Importe cada arquivo no SINDASP com o login do respectivo despachante.`, 7000);
 }
+function regerarLote(id){
+  if(!guard('gerar')) return; const l=DB.lotes.find(x=>x.id===id); if(!l) return; const d=despById(l.despId);
+  const procs=l.procs.map(pid=>DB.processos.find(p=>p.id===pid)).filter(Boolean); if(!procs.length){ alert('Os processos deste lote não estão mais no banco de dados.'); return; }
+  const formato = l.formato==='txt' ? 'txt' : l.formato==='ambos' ? 'ambos' : 'xml';
+  l.arquivos = montarArquivos(d, procs, l.venc, formato); l.layout=DB.config.layoutXML;
+  log('Guias geradas', `Arquivo do lote de ${despNome(l.despId)} (${new Date(l.data).toLocaleString('pt-BR')}) gerado de novo no layout ${DB.config.layoutXML==='sdas'?'SDAS – Santos':'SINDASP – São Paulo'}`); save();
+  l.arquivos.forEach((a,i)=>setTimeout(()=>download(a.nome, bytesDe(a)), i*400)); render();
+  toast('Arquivo gerado de novo no layout atual. Antes de importar, cancele no site do sindicato o arquivo antigo que deu erro.', 7000);
+}
 function baixarLote(id){ const l=DB.lotes.find(x=>x.id===id); if(l) l.arquivos.forEach((a,i)=>setTimeout(()=>download(a.nome, bytesDe(a)), i*400)); }
 function desfazerLote(id){
   if(!guard('*')) return;
@@ -807,12 +1002,25 @@ function excelLista(procs, nome){ if(!window.XLSX){ alert('Biblioteca de planilh
 function relLote(id){ const l=DB.lotes.find(x=>x.id===id); const d=despById(l.despId); excelLista(l.procs.map(pid=>DB.processos.find(p=>p.id===pid)).filter(Boolean), `Lote_${fileBase(d)}.xlsx`); }
 
 /* ---------------- clientes / despachantes / config ---------------- */
-function gerarTxtClientes(){
+/* separa "RUA IMOLA, 133 - SALA 2" em tipo / logradouro / número / complemento (layout de importação de clientes dos sindicatos) */
+const TIPOS_LOG={R:'RUA',RUA:'RUA',AV:'AVENIDA',AVENIDA:'AVENIDA',AL:'ALAMEDA',ALAMEDA:'ALAMEDA',ROD:'RODOVIA',RODOVIA:'RODOVIA',EST:'ESTRADA',ESTRADA:'ESTRADA',TV:'TRAVESSA',TRAVESSA:'TRAVESSA',PC:'PRACA',PCA:'PRACA',PRACA:'PRACA',VIA:'VIA',LARGO:'LARGO',VIELA:'VIELA',VIADUTO:'VIADUTO'};
+function partesEndereco(e){ let t=sdasTxt(e), tipo='', log=t, num='', comp='';
+  const m=t.match(/^([A-Z]+)\.?\s+(.*)$/); if(m && TIPOS_LOG[m[1]]){ tipo=TIPOS_LOG[m[1]]; t=m[2]; log=t; }
+  const i=t.indexOf(','); if(i>=0){ log=t.slice(0,i).trim(); const r=t.slice(i+1).trim(); const mm=r.match(/^(S\/?N|[0-9A-Z][0-9A-Z\-]*)\s*(?:-\s*)?(.*)$/); if(mm){ num=mm[1]; comp=mm[2].trim(); } else num=r; }
+  return {tipo, log, num, comp}; }
+function linhaTxtCliente(c){ const e=partesEndereco(c.endereco);
+  return [sdasTxt(c.razao||c.nome).slice(0,60), sdasTxt(c.nome).slice(0,60), fmtDoc(c.doc), '', e.tipo, e.log.slice(0,60), e.num.slice(0,10), e.comp.slice(0,30), sdasTxt(c.bairro).slice(0,30), sdasTxt(c.cidade).slice(0,30), ufSigla(c.uf), digits(c.cep).replace(/^(\d{5})(\d{3})$/,'$1-$2'), '', '', '', ''].map(tq).join(','); }
+function gerarTxtClientes(lista, nome){
   if(!guard('clientes')) return;
-  const lista = DB.clientes.filter(c=>digits(c.doc)); if(!lista.length){ alert('Nenhum cliente com CNPJ/CPF cadastrado.'); return; }
-  const txt = lista.map(c=>[c.razao||c.nome, c.nome, fmtDoc(c.doc), '', '', c.endereco, '', '', c.bairro, c.cidade, String(c.uf||'').toUpperCase(), digits(c.cep).replace(/^(\d{5})(\d{3})$/,'$1-$2'), '', '', '', ''].map(tq).join(',')).join('\r\n')+'\r\n';
-  download(`SINDASP_clientes_${nowStamp()}.txt`, encodeTxt(txt), 'text/plain');
+  lista = (lista || DB.clientes).filter(c=>digits(c.doc)); if(!lista.length){ alert('Nenhum cliente com CNPJ/CPF cadastrado.'); return; }
+  const inc=lista.filter(c=>!(c.endereco&&c.cidade&&ufValida(ufSigla(c.uf))&&digits(c.cep).length===8));
+  if(inc.length && !confirm(`${inc.length} cliente(s) com endereço incompleto: ${inc.slice(0,5).map(c=>c.nome).join(', ')}${inc.length>5?'…':''}\n\nGerar mesmo assim?`)) return;
+  const txt = lista.map(linhaTxtCliente).join('\r\n')+'\r\n';
+  log('Clientes', `Gerou TXT de clientes para o sindicato (${lista.length} cliente(s))`);
+  download(nome || `Clientes_sindicato_${nowStamp()}.txt`, encodeAnsi(txt), 'text/plain');
 }
+function txtClientesLote(id){ const l=DB.lotes.find(x=>x.id===id); if(!l) return; const nomes=new Set(l.procs.map(pid=>norm(DB.processos.find(p=>p.id===pid)?.importador||'')));
+  gerarTxtClientes(DB.clientes.filter(c=>nomes.has(norm(c.nome))), `Clientes_${fileBase(despById(l.despId)||{codSDA:0,nome:'LOTE'})}.txt`); }
 function importarClientes(rows){
   if(!guard('clientes')) return;
   let hi = rows.findIndex(r=>r && r.some(c=>/cnpj|cpf/i.test(String(c||'')))); if(hi<0){ alert('A planilha precisa ter uma coluna CNPJ.'); return; }
@@ -824,7 +1032,7 @@ function importarClientes(rows){
     const nome=String(r[iN>=0?iN:iR]||'').trim(); if(!nome) continue;
     let c=DB.clientes.find(x=>norm(x.nome)===norm(nome)); if(!c){ c={id:uid(), nome, razao:'', doc:'', endereco:'', bairro:'', cidade:'', uf:'', cep:'', despPref:''}; DB.clientes.push(c); n++; } else u++;
     const s=(i,k)=>{ if(i>=0 && String(r[i]).trim()!=='') c[k]= k==='doc'?digits(r[i]):String(r[i]).trim(); };
-    s(iR,'razao'); s(iD,'doc'); s(iE,'endereco'); s(iB,'bairro'); s(iC,'cidade'); s(iU,'uf'); s(iP,'cep'); if(!c.razao) c.razao=nome;
+    s(iR,'razao'); s(iD,'doc'); s(iE,'endereco'); s(iB,'bairro'); s(iC,'cidade'); s(iU,'uf'); s(iP,'cep'); if(c.uf) c.uf=ufSigla(c.uf); if(!c.razao) c.razao=nome;
     if(iDp>=0 && String(r[iDp]).trim()){ const v=String(r[iDp]).trim(); const d=DB.despachantes.find(x=>String(x.codSDA)===v || norm(x.nome).startsWith(norm(v))); if(d) c.despPref=d.id; }
   }
   log('Clientes', `Importou planilha: ${n} novo(s), ${u} atualizado(s)`); save(); render(); toast(`Clientes: ${n} novo(s), ${u} atualizado(s).`);
@@ -835,7 +1043,7 @@ function exportarClientes(){
   if(!rows.length) rows.push({'Nome no relatório':'','Razão social':'','CNPJ':'','Endereço':'','Bairro':'','Cidade':'','UF':'SP','CEP':'','Despachante preferencial':''});
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sheet(rows,[{wch:28},{wch:40},{wch:20},{wch:40},{wch:20},{wch:20},{wch:5},{wch:10},{wch:14}]),'Clientes'); XLSX.writeFile(wb,`Clientes_SDA_${nowStamp()}.xlsx`);
 }
-function setC(id,k,v){ if(!guard('clientes')){ render(); return; } const c=DB.clientes.find(x=>x.id===id); if(!c) return; const antes=c[k]; c[k]= k==='doc'? digits(v) : v; log('Clientes', `${c.nome}: ${({nome:'nome',razao:'razão social',doc:'CNPJ/CPF',endereco:'endereço',bairro:'bairro',cidade:'cidade',uf:'UF',cep:'CEP',despPref:'desp. preferencial'})[k]||k} ${k==='despPref'?despNome(antes)||'—':(k==='doc'?fmtDoc(antes):antes)||'—'} → ${k==='despPref'?despNome(c[k])||'—':(k==='doc'?fmtDoc(c[k]):c[k])||'—'}`); save(); if(k==='doc'||k==='despPref') render(); }
+function setC(id,k,v){ if(!guard('clientes')){ render(); return; } const c=DB.clientes.find(x=>x.id===id); if(!c) return; if(k==='uf') v=ufSigla(v); const antes=c[k]; c[k]= k==='doc'? digits(v) : v; log('Clientes', `${c.nome}: ${({nome:'nome',razao:'razão social',doc:'CNPJ/CPF',endereco:'endereço',bairro:'bairro',cidade:'cidade',uf:'UF',cep:'CEP',despPref:'desp. preferencial'})[k]||k} ${k==='despPref'?despNome(antes)||'—':(k==='doc'?fmtDoc(antes):antes)||'—'} → ${k==='despPref'?despNome(c[k])||'—':(k==='doc'?fmtDoc(c[k]):c[k])||'—'}`); save(); if(k==='doc'||k==='despPref') render(); }
 function novoCliente(){ if(!guard('clientes')) return; log('Clientes','Novo cliente'); DB.clientes.unshift({id:uid(), nome:'NOVO CLIENTE', razao:'', doc:'', endereco:'', bairro:'', cidade:'', uf:'SP', cep:'', despPref:''}); save(); render(); }
 function delCliente(id){ if(!guard('*')) return; if(!confirm('Excluir este cliente?')) return; log('Clientes','Excluiu '+(DB.clientes.find(c=>c.id===id)||{}).nome); DB.clientes=DB.clientes.filter(c=>c.id!==id); save(); render(); }
 function setD(id,k,v){ if(!guard('*')){ render(); return; } const d=despById(id); if(!d) return; log('Despachantes', `${d.nome}: ${k} ${d[k]} → ${v}`); if(k==='ativo') d.ativo=v; else if(k==='codSDA') d.codSDA=Number(v)||0; else if(k==='cpf'||k==='codSindasp') d[k]=digits(v); else d[k]=v; save(); render(); }
@@ -843,6 +1051,13 @@ function novoDesp(){ if(!guard('*')) return; log('Despachantes','Novo despachant
 function delDesp(id){ if(!guard('*')) return; if(DB.processos.some(p=>p.despId===id)){ alert('Este despachante tem processos no banco de dados. Desative-o em vez de excluir, para manter o histórico.'); return; } if(!confirm('Excluir despachante?')) return; DB.despachantes=DB.despachantes.filter(d=>d.id!==id); save(); render(); }
 const CFG_LIVRE=['padraoArquivo','filtroExtrato'];
 function setCfg(k,v){ if(!guard(CFG_LIVRE.includes(k)?'arquivo':'*')){ render(); return; } if(k==='alertaRelatorio') v=!!v; log('Configuração', `${k}: ${JSON.stringify(DB.config[k])} → ${JSON.stringify(v)}`); const num=['impPerc','impMin','impMax','expFixo','expPerc','expMin','expMax','diasVenc','bloqueioMin']; DB.config[k]= num.includes(k)? parseNum(v) : (k==='txtIncluirDecl'? !!v : v); save(); render(); }
+function setRegra(id,k,v){ if(!guard('*')){ render(); return; } const r=DB.config.regrasSDA.find(x=>x.id===id); if(!r) return; const antes=r[k];
+  if(k==='valor') v=round2(parseNum(v)); if(k==='padrao') v=String(v).trim(); r[k]=v; if(k==='tipo'&&v==='fixo'&&!r.valor) r.valor=912;
+  log('Configuração', `Regra SDA "${r.padrao}": ${k} ${k==='desp'?despNome(antes)||'qualquer':antes} → ${k==='desp'?despNome(v)||'qualquer':v}`); save(); render(); }
+function novaRegra(){ if(!guard('*')) return; DB.config.regrasSDA.push({id:uid(), padrao:'', tipo:'fixo', valor:912, desp:'', obs:''}); log('Configuração','Nova regra especial de SDA'); save(); render(); }
+function delRegra(id){ if(!guard('*')) return; const r=DB.config.regrasSDA.find(x=>x.id===id); if(!r||!confirm(`Excluir a regra "${r.padrao}"?`)) return; DB.config.regrasSDA=DB.config.regrasSDA.filter(x=>x.id!==id); log('Configuração',`Excluiu regra SDA "${r.padrao}" (${regraTxt(r)})`); save(); render(); }
+function setLinhaSdas(i,v){ if(!isAdmin()) return; DB.config.linhasSdas[i]=v; clearTimeout(window._ls); window._ls=setTimeout(()=>{ log('Configuração',`Linha ${i+1} da guia (Santos): ${v}`); save(); },1500); const el=$('#prevSdas'); if(el) el.textContent=previewSdas(); }
+function previewSdas(){ const p = DB.processos[0] || {processo:'MR-26/0071', refCliente:'003-005-0003012', cif:82962.77, fob:0, hawb:'PY406200030', registro:'2609306643', dataReg:'2026-10-30', tipo:'I', importador:'CLIENTE EXEMPLO'}; return linhasSdasGuia(p).filter(Boolean).join('\n'); }
 function setLinha(i,v){ if(!isAdmin()) return; clearTimeout(window._ll); window._ll=setTimeout(()=>{ log('Configuração',`Linha ${i+1} da guia: ${v}`); save(); },1500); DB.config.linhas[i]=v; save(); const el=$('#prevLinhas'); if(el) el.textContent=previewLinhas(); }
 function resetLinhas(){ if(!guard('*')) return; log('Configuração','Linhas da guia restauradas ao padrão'); DB.config.linhas=DEFAULT_CONFIG.linhas.slice(); save(); render(); }
 function previewLinhas(){ const p = DB.processos[0] || {processo:'AI-25/3269', refCliente:'076/25', cif:82962.77, fob:0, hawb:'FR25004117', registro:'2508910650', dataReg:'2025-04-23', tipo:'I', importador:'CLIENTE EXEMPLO'}; return linhasGuia(p).filter(Boolean).join('\n'); }
@@ -1050,7 +1265,7 @@ function renderNav(){
     I('dashboard','📊','Dashboard') + G('Rotina do dia','distribuicao','gerar') + I('distribuicao','📋','Importar e distribuir',pend) + I('gerar','📤','Gerar guias',dist) +
     G('Consultas','banco') + I('banco','🗄️','Banco de dados',alertas) + I('relatorio','📅','Relatório mensal') + I('conciliacao','🏦','Conciliação bancária') + I('lotes','🗂️','Lotes gerados') +
     G('Cadastros','clientes','config') + I('clientes','🏢','Clientes',semDoc) + I('despachantes','👤','Despachantes') + I('usuarios','🔐','Usuários') + I('recados','📣','Recados') + I('auditoria','📜','Auditoria') + I('config','⚙️','Configurações') + I('ajuda','❓','Como usar') +
-    `<div class="foot">${state.fileHandle?`💾 Banco de dados vinculado:<br><b>${esc(state.fileHandle.name)}</b><br>${esc(state.fileStatus)}`: state.pendingHandle?`⚠ Arquivo do banco de dados desconectado.<br><button onclick="reconnectFile()">Reconectar</button>`:`Banco de dados salvo neste navegador.${can('*')?`<br><button onclick="go('config')">Vincular ao Dropbox</button>`:''}`}
+    `<div class="foot">${state.fileHandle?`💾 ${state.raiz?`Pasta do sistema:<br><b>${esc(state.raiz.name)}</b>`:`Banco de dados vinculado:<br><b>${esc(state.fileHandle.name)}</b>`}<br>${esc(state.fileStatus)}`: state.pendingHandle?`⚠ Arquivo do banco de dados desconectado.<br><button onclick="reconnectFile()">Reconectar</button>`:`Banco de dados salvo neste navegador.${can('*')?`<br><button onclick="go('config')">Vincular ao Dropbox</button>`:''}`}
     <br><br>${state.pasta?`📧 Leitura automática ligada<br><span>${esc(state.pasta.name)}</span>${state.pastaUltima?`<br>verificado às ${state.pastaUltima.toLocaleTimeString('pt-BR')}`:''}`: state.pastaPend?`⚠ Pasta de relatórios desconectada<br><button onclick="reconnectPasta()">Reativar leitura automática</button>`:`📧 Leitura automática desligada${can('importar')?`<br><button onclick="go('config')">Configurar</button>`:''}`}
 </div>`;
 }
@@ -1062,27 +1277,31 @@ function render(){
   if(!state.user){ $('#nav').style.display='none'; document.querySelector('.app').classList.add('nologin'); $('#main').innerHTML=loginView(); const p=$('#lgPin')||$('#suNome'); if(p) setTimeout(()=>p.focus(),50); return; }
   $('#nav').style.display=''; document.querySelector('.app').classList.remove('nologin');
   if(!canTab(state.tab)) state.tab='dashboard';
-  const aviso = desconectado() ? `<div class="alert e noprint" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">⚠ <b>Este computador está desconectado do banco de dados compartilhado.</b> O que for feito aqui fica só neste navegador e não aparece para os outros usuários.<span class="spacer"></span>${state.pendingHandle?`<button class="b p" onclick="reconnectFile()">Reconectar agora</button>`:`<button class="b p" onclick="linkExistingFile()">Abrir banco de dados compartilhado</button>`}</div>` : '';
+  const aviso = desconectado() ? `<div class="alert e noprint" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">⚠ <b>Este computador está desconectado do banco de dados compartilhado.</b> O que for feito aqui fica só neste navegador e não aparece para os outros usuários.<span class="spacer"></span>${(state.pendingHandle||state.raizPend)?`<button class="b p" onclick="reconnectFile()">Reconectar agora</button>`:`<button class="b p" onclick="conectarPasta()">Conectar à pasta do sistema</button>`}</div>` : '';
   renderNav(); $('#main').innerHTML = `<div class="topbar noprint"><div class="badge" style="position:absolute;left:0;top:-4px;background:#fef3c7;color:#92400e">Demonstração · dados fictícios</div><img src="${LOGO_ICON}" alt="JL"><span>JL SISTEMAS</span>${(()=>{ const c=contagemAvisos(); return `<button class="sino" onclick="abrirPainel(false)" title="Avisos e pendências">🔔${c.n?`<b class="${c.urg?'':'lar'}">${c.n}</b>`:''}</button>`; })()}</div>` + aviso + (VIEWS[state.tab]||VIEWS.dashboard)(); afterRender();
 }
 function loginView(){
   const ativos=DB.usuarios.filter(u=>u.ativo).sort((a,b)=>a.nome.localeCompare(b.nome));
-  if(!DB.usuarios.length) return `<div class="login"><img class="logo" src="${LOGO_FULL}" alt="JL Sistemas"><div class="firma">JL SISTEMAS</div><h1 style="text-align:center">SDA • Guias GRH</h1><p class="lead">Primeiro acesso: crie o usuário <b>Administrador</b>. Depois ele cadastra os demais.</p>
+  if(!DB.usuarios.length) return `<div class="login"><img class="logo" src="${LOGO_FULL}" alt="JL Sistemas"><div class="firma">JL SISTEMAS</div><h1 style="text-align:center">SDA • Guias GRH</h1>
+    <p class="lead" style="text-align:center">Este computador ainda não está ligado ao sistema.</p>
+    <button class="b p" style="width:100%;padding:12px;font-size:15px" onclick="carregarDemo()">▶ Entrar na demonstração (dados fictícios)</button><p class="small muted" style="margin:8px 0 14px;text-align:center">Carrega 6 meses de exemplo. Usuários: <b>Demo Admin</b> (PIN 1234), <b>Demo Financeiro</b> (2222) e <b>Demo Consulta</b> (3333).</p>
+    <button class="b" style="width:100%;padding:10px" onclick="conectarPasta()">📁 Conectar à pasta do sistema</button>
+    <p class="small" style="margin:10px 0 0">Escolha a pasta <b>SDA - Sistema Emissão de Guia</b> (a mesma onde está este arquivo) e clique em <b>Permitir</b>. O sistema encontra sozinho o banco de dados da equipe e a pasta de relatórios. Depois entre com o usuário e o PIN que o administrador te passou.</p>
+    <p class="small muted" style="margin:6px 0 0">Outra opção: <button class="link" onclick="linkExistingFile()">abrir o arquivo do banco manualmente</button>.</p>
+    <details style="margin-top:18px;padding-top:12px;border-top:1px solid var(--line)"><summary class="small muted" style="cursor:pointer">Primeira instalação do sistema (só o administrador, uma única vez)</summary>
+    <div class="alert w" style="margin:10px 0">⚠ Use isto <b>somente</b> se ninguém usa o sistema ainda. Se a equipe já usa, criar um administrador aqui cria um <b>banco separado</b> e o seu trabalho não aparece para os outros.</div>
     <label class="f">Seu nome<input id="suNome" value="${esc(DB.config.usuario||'')}" autocomplete="off"></label>
     <label class="f">Crie um PIN (4 a 8 números)<input id="suPin" type="password" inputmode="numeric" maxlength="8" class="pin"></label>
     <label class="f">Repita o PIN<input id="suPin2" type="password" inputmode="numeric" maxlength="8" class="pin" onkeydown="if(event.key==='Enter')criarPrimeiroAdmin()"></label>
-    <div id="lgErr" class="small" style="color:var(--err);min-height:18px"></div><button class="b p" style="width:100%;padding:10px" onclick="criarPrimeiroAdmin()">Criar administrador e entrar</button>
-    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)"><button class="b p" style="width:100%;padding:12px;font-size:15px" onclick="carregarDemo()">▶ Entrar na demonstração (dados fictícios)</button><p class="small muted" style="margin:8px 0 0;text-align:center">Carrega 6 meses de exemplo. Usuários: <b>Demo Admin</b> (PIN 1234), <b>Demo Financeiro</b> (2222) e <b>Demo Consulta</b> (3333).</p></div>
-    <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--line)"><p class="small" style="margin:0 0 8px"><b>O sistema já é usado por outra pessoa?</b> Não crie um administrador novo: abra o banco de dados compartilhado (arquivo <span class="kbd">SDA_banco_de_dados.json</span>, na pasta <span class="kbd">Automacao</span>) e entre com o usuário e PIN que o administrador te passou.</p>
-    <button class="b" style="width:100%;padding:10px" onclick="linkExistingFile()">📂 Abrir banco de dados existente…</button></div></div>`;
+    <div id="lgErr" class="small" style="color:var(--err);min-height:18px"></div><button class="b" style="width:100%;padding:10px" onclick="criarPrimeiroAdmin()">Criar administrador (primeira instalação)</button></details></div>`;
   const ult=localStorage.getItem('sda_ultimo_usuario');
   return `<div class="login"><img class="logo" src="${LOGO_FULL}" alt="JL Sistemas"><div class="firma">JL SISTEMAS</div><h1 style="text-align:center">SDA • Guias GRH</h1><p class="lead" style="text-align:center">Entre com seu usuário e PIN.</p>
     <label class="f">Usuário<select id="lgUser">${ativos.map(u=>`<option value="${u.id}" ${u.id===ult?'selected':''}>${esc(u.nome)} – ${PERFIS[u.perfil].nome}</option>`).join('')}</select></label>
     <label class="f">PIN<input id="lgPin" type="password" inputmode="numeric" maxlength="8" class="pin" autocomplete="off" onkeydown="if(event.key==='Enter')doLogin()"></label>
     <div id="lgErr" class="small" style="color:var(--err);min-height:18px"></div>
     <button class="b p" style="width:100%;padding:10px" onclick="doLogin()">Entrar</button>
-    <p class="small" style="margin:12px 0 0;text-align:center;background:#fef3c7;color:#92400e;border-radius:8px;padding:6px">Demonstração: Demo Admin 1234 · Demo Financeiro 2222 · Demo Consulta 3333</p><p class="small muted" style="margin:14px 0 0">Esqueceu o PIN? Peça ao administrador para redefinir. Administrador sem acesso: <button class="link" onclick="recuperarAdmin()">usar código de recuperação</button>.</p>
-    ${state.pendingHandle?`<p class="small" style="margin:10px 0 0">⚠ O arquivo do banco de dados no Dropbox está desconectado. <button class="link" onclick="reconnectFile()">Reconectar antes de entrar</button> para ver os usuários mais recentes.</p>`:''}</div>`;
+    <p class="small" style="margin:12px 0 0;text-align:center;background:#fef3c7;color:#92400e;border-radius:8px;padding:6px">Demonstração: Demo Admin 1234 · Demo Financeiro 2222 · Demo Consulta 3333</p><p class="small muted" style="margin:14px 0 0">Não aparece o seu usuário? <button class="link" onclick="conectarPasta()">Conectar à pasta do sistema</button>.<br>Esqueceu o PIN? Peça ao administrador para redefinir. Administrador sem acesso: <button class="link" onclick="recuperarAdmin()">usar código de recuperação</button>.</p>
+    ${(state.pendingHandle||state.raizPend)?`<p class="small" style="margin:10px 0 0">🔗 Ao clicar em <b>Entrar</b>, o navegador pode pedir para <b>Permitir</b> o acesso à pasta do sistema – é assim que os dados da equipe são atualizados.</p>`:''}</div>`;
 }
 function backupBanner(){
   if(state.fileHandle || !DB.processos.length || desconectado()) return '';
@@ -1189,9 +1408,9 @@ distribuicao(){
   ${lista.map(p=>{ const s=statusDe(p), c=clienteDe(p), semDoc=!c||!digits(c.doc), base=p.tipo==='E'?p.fob:p.cif;
     return `<tr class="${state.sel.has(p.id)?'selr':''}">
     <td><input type="checkbox" ${state.sel.has(p.id)?'checked':''} onchange="tog('${p.id}',this.checked)"></td>
-    <td><button class="link" style="color:inherit;font-weight:700;text-decoration:none" onclick="detalhe('${p.id}')">${esc(p.processo)}</button></td>
+    <td><button class="link" style="color:inherit;font-weight:700;text-decoration:none" onclick="detalhe('${p.id}')">${esc(p.processo)}</button>${p.importadoEm && Date.now()-new Date(p.importadoEm)<864e5 && s==='pendente'?' <span class="badge" style="background:#dcfce7;color:#166534">novo</span>':''}${p.alerta?` <span title="${esc(p.alerta)}">⚠</span>`:''}</td>
     <td><select class="sm" onchange="setP('${p.id}','tipo',this.value)"><option value="I" ${p.tipo!=='E'?'selected':''}>IMP</option><option value="E" ${p.tipo==='E'?'selected':''}>EXP</option></select></td>
-    <td>${esc(p.importador)} ${semDoc?`<span class="badge s-pendente" title="Cadastre o CNPJ em Clientes">sem CNPJ</span>`:''}</td>
+    <td>${esc(p.importador)} ${semDoc?`<span class="badge s-pendente" title="Cadastre o CNPJ em Clientes">sem CNPJ</span>`:''}${(()=>{ const rg=regraDe(p); return rg?` <span class="badge ${rg.tipo==='nao'?'s-ignorado':'s-distribuido'}" title="${esc(rg.obs||'')} – regra especial (Configurações)">${esc(regraTxt(rg))}</span>`:''; })()}</td>
     <td>${esc(p.refCliente)}</td><td>${esc(p.hawb)}</td>
     <td class="r"><input class="sm num" value="${brl(base)}" onchange="setP('${p.id}','${p.tipo==='E'?'fob':'cif'}',this.value)"></td>
     <td>${esc(p.registro)} <span class="muted small">${tipoDecl(p)}</span></td><td>${isoToBR(p.dataReg)}</td>
@@ -1210,7 +1429,7 @@ gerar(){
     <label class="f">Vencimento das guias<input type="date" id="venc" value="${venc}"></label>
     <label class="f">Formato<select id="formato"><option value="xml">XML (recomendado)</option><option value="txt">TXT</option><option value="ambos">XML + TXT</option></select></label>
     <span class="spacer"></span><button class="b p" ${ds.length?'':'disabled'} onclick='gerar(${JSON.stringify(ds.map(d=>d.id))}, true)'>📦 Gerar de todos (ZIP)</button>
-  </div><p class="muted small" style="margin:8px 0 0">XML: leva código SINDASP e CPF do despachante + dados do cliente. TXT: o cliente precisa já estar cadastrado no login do despachante no SINDASP (use "TXT de clientes" em Clientes).</p></div>
+  </div><p class="muted small" style="margin:8px 0 0">XML no layout <b>${DB.config.layoutXML==='sdas'?'SDAS – Santos':'SINDASP – São Paulo'}</b> (muda em Configurações): leva o código do despachante no sindicato e o CPF + dados do cliente. TXT: o cliente precisa já estar cadastrado no login do despachante no SINDASP (use "TXT de clientes" em Clientes).</p></div>
   ${ds.map(d=>{ const procs=procsParaGerar(d.id), v=validarDesp(d,procs), tot=procs.reduce((s,p)=>s+valorSDA(p),0);
     return `<div class="card" style="border-left:4px solid ${despCor(d.id)}"><div class="row"><h2 style="margin:0">${d.codSDA} – ${esc(d.nome)}</h2><span class="muted">SINDASP ${esc(d.codSindasp||'—')} • CPF ${fmtDoc(d.cpf)}</span><span class="spacer"></span><b>${procs.length} guia(s) • R$ ${brl(tot)}</b>
       <button class="b p" ${v.erros.length?'disabled':''} onclick="gerar(['${d.id}'], false)">Gerar arquivo</button></div>
@@ -1218,7 +1437,7 @@ gerar(){
       <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Processo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Registro</th><th>Data reg.</th><th class="r">CIF/FOB</th><th class="r">Valor SDA</th></tr></thead><tbody>
       ${procs.map(p=>{ const c=clienteDe(p); return `<tr><td>${esc(p.processo)}</td><td>${esc(c?.razao||p.importador)}</td><td>${c&&digits(c.doc)?fmtDoc(c.doc):'<span class="badge s-pendente">falta</span>'}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td><td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="r"><b>${brl(valorSDA(p))}</b></td></tr>`; }).join('')}
       </tbody></table></div>
-      <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">Ver a descrição da guia (1º processo)</summary><pre class="code" style="margin-top:6px">${esc(linhasGuia(procs[0]).filter(Boolean).join('\n'))}</pre></details></div>`; }).join('') || `<div class="card empty">Nenhum processo distribuído aguardando guia.</div>`}`;
+      <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">Ver a descrição da guia (1º processo)</summary><pre class="code" style="margin-top:6px">${esc(linhasAtivas(procs[0]).filter(Boolean).join('\n'))}</pre></details></div>`; }).join('') || `<div class="card empty">Nenhum processo distribuído aguardando guia.</div>`}`;
 },
 /* ===== BANCO DE DADOS ===== */
 banco(){
@@ -1353,7 +1572,7 @@ lotes(){
   <div class="tbl-wrap"><table><thead><tr><th>Gerado em</th><th>Despachante</th><th>Formato</th><th>Vencimento</th><th class="r">Guias</th><th class="r">Total (R$)</th><th>Processos</th><th>Usuário</th><th></th></tr></thead><tbody>
   ${DB.lotes.map(l=>`<tr><td>${new Date(l.data).toLocaleString('pt-BR')}</td><td><span class="dot" style="background:${despCor(l.despId)};margin-right:6px"></span>${esc(despNome(l.despId))}</td><td>${l.formato.toUpperCase()}</td><td>${isoToBR(l.venc)}</td><td class="r">${l.qtd}</td><td class="r"><b>${brl(l.total)}</b></td>
     <td class="small" style="white-space:normal;max-width:300px">${l.resumo.map(r=>esc(r.processo)).join(', ')}</td><td>${esc(l.usuario||'')}</td>
-    <td><div class="row"><button class="b" onclick="baixarLote('${l.id}')">⬇ Arquivo</button><button class="b" onclick="relLote('${l.id}')">📊 Excel</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')">Desfazer</button></div></td></tr>`).join('') || tabelaVazia(9,'Nenhum lote gerado ainda.')}
+    <td><div class="row"><button class="b" onclick="baixarLote('${l.id}')">⬇ Arquivo</button><button class="b" onclick="txtClientesLote('${l.id}')" title="Cadastro dos clientes deste lote (com endereço) para importar no site do sindicato">👥 Clientes</button><button class="b" data-perm="gerar" onclick="regerarLote('${l.id}')" title="Gera o arquivo de novo com o layout e os dados atuais">🔄 Gerar de novo</button><button class="b" onclick="relLote('${l.id}')">📊 Excel</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')">Desfazer</button></div></td></tr>`).join('') || tabelaVazia(9,'Nenhum lote gerado ainda.')}
   </tbody></table></div>`;
 },
 /* ===== CLIENTES ===== */
@@ -1361,9 +1580,9 @@ clientes(){
   const q=norm(state.cq); const lista=DB.clientes.filter(c=>!q||norm(c.nome+' '+c.razao+' '+c.doc).includes(q)).sort((a,b)=> (!!digits(a.doc))-(!!digits(b.doc)) || a.nome.localeCompare(b.nome));
   return `<h1>Clientes (Importador / Exportador)</h1><p class="lead">O relatório traz só o nome. Cadastre CNPJ e endereço uma vez – o sistema reconhece o cliente pelo <b>nome exatamente como vem no relatório</b>.</p>
   <div class="card"><div class="row"><input placeholder="Buscar cliente…" value="${esc(state.cq)}" id="cq" oninput="debRender('cq',v=>state.cq=v,this.value)" style="min-width:240px">
-    <button class="b" onclick="novoCliente()">➕ Novo</button><button class="b" onclick="$('#fileCli').click()">📥 Importar planilha</button><button class="b" onclick="exportarClientes()">📊 Exportar / modelo</button><span class="spacer"></span><button class="b" onclick="gerarTxtClientes()" title="Para Menu Cliente ▸ Importação de Cliente no SINDASP">TXT de clientes (SINDASP)</button></div>
+    <button class="b" onclick="novoCliente()">➕ Novo</button><button class="b" onclick="$('#fileCli').click()">📥 Importar planilha</button><button class="b" onclick="exportarClientes()">📊 Exportar / modelo</button><span class="spacer"></span><button class="b" onclick="gerarTxtClientes()" title="Atualiza o cadastro de clientes (com endereço) no site do sindicato: Menu Cliente ▸ Importação de Cliente">📄 TXT de clientes p/ sindicato</button></div>
   <p class="muted small" style="margin:8px 0 0"><b>Despachante preferencial</b>: a distribuição automática manda sempre os processos desse cliente para esse despachante.</p></div>
-  <div class="tbl-wrap"><table><thead><tr><th>Nome no relatório</th><th>Razão social (vai na guia)</th><th>CNPJ / CPF</th><th>Endereço</th><th>Bairro</th><th>Cidade</th><th>UF</th><th>CEP</th><th>Desp. preferencial</th><th class="r">Guias</th><th></th></tr></thead><tbody>
+  <div class="tbl-wrap"><table><thead><tr><th>Nome no relatório</th><th>Razão social (vai na guia)</th><th>CNPJ / CPF</th><th>Endereço</th><th>Bairro</th><th>Cidade</th><th>UF</th><th>CEP</th><th>Desp. preferencial</th><th>Regra SDA</th><th class="r">Guias</th><th></th></tr></thead><tbody>
   ${lista.map(c=>{ const ok=digits(c.doc), val=ok&&docValido(c.doc), ng=DB.processos.filter(p=>isGerada(p)&&norm(p.importador)===norm(c.nome)).length; return `<tr class="${ok?'':'miss'}">
     <td><input class="sm" value="${esc(c.nome)}" onchange="setC('${c.id}','nome',this.value)" style="width:190px"></td>
     <td><input class="sm" value="${esc(c.razao)}" onchange="setC('${c.id}','razao',this.value)" style="width:260px" maxlength="60"></td>
@@ -1371,10 +1590,10 @@ clientes(){
     <td><input class="sm" value="${esc(c.endereco)}" onchange="setC('${c.id}','endereco',this.value)" style="width:230px" maxlength="60"></td>
     <td><input class="sm" value="${esc(c.bairro)}" onchange="setC('${c.id}','bairro',this.value)" style="width:130px" maxlength="30"></td>
     <td><input class="sm" value="${esc(c.cidade)}" onchange="setC('${c.id}','cidade',this.value)" style="width:140px" maxlength="30"></td>
-    <td><input class="sm" value="${esc(c.uf)}" onchange="setC('${c.id}','uf',this.value.toUpperCase())" style="width:44px" maxlength="2"></td>
+    <td><select class="sm" onchange="setC('${c.id}','uf',this.value)" title="${esc(UFS[c.uf]||'')}" style="${c.uf&&!ufValida(c.uf)?'border-color:#e7877a;background:#fff4f2':''}"><option value=""></option>${c.uf&&!ufValida(c.uf)?`<option value="${esc(c.uf)}" selected>⚠ ${esc(c.uf)}</option>`:''}${Object.keys(UFS).map(sg=>`<option value="${sg}" ${c.uf===sg?'selected':''}>${sg}</option>`).join('')}</select></td>
     <td><input class="sm" value="${esc(c.cep)}" onchange="setC('${c.id}','cep',this.value)" style="width:90px"></td>
-    <td><select class="sm" onchange="setC('${c.id}','despPref',this.value)">${despOptions(c.despPref,'—')}</select></td><td class="r">${ng}</td>
-    <td><button class="b d" data-perm="*" onclick="delCliente('${c.id}')" title="Excluir">✕</button></td></tr>`; }).join('') || tabelaVazia(11,'Os clientes aparecem aqui automaticamente ao importar o relatório.')}
+    <td><select class="sm" onchange="setC('${c.id}','despPref',this.value)">${despOptions(c.despPref,'—')}</select></td><td class="small">${regrasDoCliente(c.nome).map(r=>`<span class="badge ${r.tipo==='nao'?'s-ignorado':'s-distribuido'}" title="${esc(r.obs||'')}">${esc(regraTxt(r))}</span>`).join(' ')||'<span class="muted">padrão</span>'}</td><td class="r">${ng}</td>
+    <td><button class="b d" data-perm="*" onclick="delCliente('${c.id}')" title="Excluir">✕</button></td></tr>`; }).join('') || tabelaVazia(12,'Os clientes aparecem aqui automaticamente ao importar o relatório.')}
   </tbody></table></div>`;
 },
 /* ===== DESPACHANTES ===== */
@@ -1398,7 +1617,7 @@ config(){
   return `<h1>Configurações</h1><p class="lead">Banco de dados, regras de cálculo e texto da guia.</p>
   <div class="card" data-perm="arquivo"><h2>💾 Banco de dados</h2>
    <p class="small">Tudo fica gravado no banco de dados deste navegador. <b>Recomendado:</b> vincule o arquivo <span class="kbd">Automacao\\SDA_banco_de_dados.json</span> da pasta do sistema no Dropbox – cada alteração é salva nele na hora, você tem cópia na nuvem e pode abrir o sistema em outro computador apontando para o mesmo arquivo (Chrome ou Edge).</p>
-   <div class="row">${state.fileHandle?`<span class="badge s-pago">Vinculado: ${esc(state.fileHandle.name)}</span><span class="muted small">${esc(state.fileStatus)}</span><button class="b" data-perm="*" onclick="unlinkFile()">Desvincular</button>`:`<button class="b p" data-perm="*" onclick="linkNewFile()">Criar arquivo do banco de dados…</button><button class="b" onclick="linkExistingFile()">Abrir arquivo existente…</button>`}
+   <div class="row">${state.fileHandle?`<span class="badge s-pago">Vinculado: ${esc(state.fileHandle.name)}</span><span class="muted small">${esc(state.fileStatus)}</span><button class="b" data-perm="*" onclick="unlinkFile()">Desvincular</button>`:`<button class="b p" onclick="conectarPasta()">📁 Conectar à pasta do sistema</button><button class="b" onclick="linkExistingFile()">Abrir arquivo do banco…</button><button class="b" data-perm="*" onclick="linkNewFile()">Criar banco novo (1ª instalação)…</button>`}
    <span class="spacer"></span><button class="b" onclick="exportBackup()">⬇ Baixar backup</button><button class="b" data-perm="*" onclick="$('#fileBackup').click()">⬆ Restaurar backup</button></div>
    <p class="muted small" style="margin:8px 0 0">${DB.processos.length} processos • ${DB.lotes.length} lotes • ${DB.clientes.length} clientes • última alteração ${DB.atualizadoEm?new Date(DB.atualizadoEm).toLocaleString('pt-BR'):'—'} • último backup ${DB.ultimoBackup?new Date(DB.ultimoBackup).toLocaleString('pt-BR'):'nunca'}</p></div>
   <div class="card" data-perm="importar"><h2>📧 Leitura automática do relatório (e-mail ▸ pasta)</h2>
@@ -1415,20 +1634,38 @@ config(){
     <b style="width:110px">Exportação</b><label class="f">Modo<select onchange="setCfg('expModo',this.value)"><option value="fixo" ${c.expModo==='fixo'?'selected':''}>Valor fixo</option><option value="perc" ${c.expModo==='perc'?'selected':''}>% sobre FOB</option></select></label>
     ${c.expModo==='fixo'?`<label class="f">Valor fixo R$<input class="num" value="${brl(c.expFixo)}" onchange="setCfg('expFixo',this.value)"></label>`:`<label class="f">% sobre FOB<input class="num" value="${c.expPerc}" onchange="setCfg('expPerc',this.value)"></label><label class="f">Mínimo R$ (0 = sem)<input class="num" value="${brl(c.expMin)}" onchange="setCfg('expMin',this.value)"></label><label class="f">Máximo R$ (0 = sem)<input class="num" value="${brl(c.expMax)}" onchange="setCfg('expMax',this.value)"></label>`}
   </div><p class="muted small">Mudanças valem para processos ainda sem guia. Guias já geradas guardam o valor da época.</p></div>
+  <div class="card" data-perm="*" data-lockmsg="🔒 Somente administrador"><h2>⭐ Regras especiais de SDA por cliente</h2>
+   <p class="muted small" style="margin-top:-4px">Valem antes da regra geral. O sistema procura o texto no nome do cliente (como vem no relatório) e na razão social – ex.: "ALFA" vale para ALFA IMPORTADORA, ALFA COMÉRCIO etc. "Não recolher" deixa o processo como <b>Não gera SDA</b> automaticamente.</p>
+   <div class="tbl-wrap" style="max-height:none"><table><thead><tr><th>Nome do cliente contém</th><th>Regra</th><th class="r">Valor fixo (R$)</th><th>Só quando o despachante for</th><th>Observação</th><th>Clientes que se encaixam</th><th></th></tr></thead><tbody>
+   ${(c.regrasSDA||[]).map(r=>{ const cl=DB.clientes.filter(x=>textoCliente(x.nome).includes(norm(r.padrao))&&r.padrao); return `<tr>
+     <td><input class="sm" value="${esc(r.padrao)}" onchange="setRegra('${r.id}','padrao',this.value)" style="width:150px"></td>
+     <td><select class="sm" onchange="setRegra('${r.id}','tipo',this.value)"><option value="fixo" ${r.tipo==='fixo'?'selected':''}>Valor fixo</option><option value="nao" ${r.tipo==='nao'?'selected':''}>Não recolher SDA</option></select></td>
+     <td class="r">${r.tipo==='fixo'?`<input class="sm num" value="${brl(r.valor)}" onchange="setRegra('${r.id}','valor',this.value)">`:'—'}</td>
+     <td><select class="sm" onchange="setRegra('${r.id}','desp',this.value)">${despOptions(r.desp,'qualquer despachante')}</select></td>
+     <td><input class="sm" value="${esc(r.obs||'')}" onchange="setRegra('${r.id}','obs',this.value)" style="width:200px"></td>
+     <td class="small" style="white-space:normal;max-width:260px">${cl.length?cl.map(x=>esc(x.nome)).join(', '):'<span class="muted">nenhum cliente ainda</span>'}</td>
+     <td><button class="b d" onclick="delRegra('${r.id}')">✕</button></td></tr>`; }).join('')||'<tr><td colspan="7" class="empty">Nenhuma regra.</td></tr>'}
+   </tbody></table></div><div style="margin-top:8px"><button class="b" onclick="novaRegra()">➕ Nova regra</button> <span class="muted small">Guias já geradas não mudam; a regra vale para os processos ainda não gerados.</span></div></div>
   <div class="card" data-perm="*" data-lockmsg="🔒 Somente administrador"><h2>🔔 Avisos ao entrar</h2><div class="row">
     <label class="f">Alertar se o relatório do dia não for importado<select onchange="setCfg('alertaRelatorio',this.value==='1')"><option value="1" ${c.alertaRelatorio?'selected':''}>Sim (dias úteis)</option><option value="0" ${!c.alertaRelatorio?'selected':''}>Não</option></select></label>
     <label class="f">Até que horas<input type="time" value="${esc(c.horaRelatorio||'10:00')}" onchange="setCfg('horaRelatorio',this.value)"></label>
     <span class="muted small" style="align-self:flex-end">O painel aparece depois do login só quando há algo pendente. Recados para a equipe: menu <b>Recados</b>.</span></div></div>
   <div class="card" data-perm="*" data-lockmsg="🔒 Somente administrador"><h2>Guia (GRH)</h2><div class="row">
     <label class="f">Vencimento padrão (dias após gerar)<input class="num" value="${c.diasVenc}" onchange="setCfg('diasVenc',this.value)"></label>
-    <label class="f">Banco (XML)<select onchange="setCfg('banco',this.value)"><option value="422" ${c.banco==='422'?'selected':''}>422 – Safra</option><option value="001" ${c.banco==='001'?'selected':''}>001 – Banco do Brasil</option></select></label>
+    <label class="f">Sindicato / layout do XML<select onchange="setCfg('layoutXML',this.value)"><option value="sdas" ${c.layoutXML==='sdas'?'selected':''}>SDAS – Santos (sindicato.sdas.org.br)</option><option value="sindasp" ${c.layoutXML!=='sdas'?'selected':''}>SINDASP – São Paulo</option></select></label>
+    ${c.layoutXML==='sdas'?`<label class="f">Banco (XML)<select onchange="setCfg('bancoSdas',this.value)"><option value="001" ${c.bancoSdas!=='422'?'selected':''}>001 – Banco do Brasil</option><option value="422" ${c.bancoSdas==='422'?'selected':''}>422 – Safra</option></select></label>`:`<label class="f">Banco (XML)<select onchange="setCfg('banco',this.value)"><option value="422" ${c.banco==='422'?'selected':''}>422 – Safra</option><option value="001" ${c.banco==='001'?'selected':''}>001 – Banco do Brasil</option></select></label>`}
     <label class="f">Codificação do TXT<select onchange="setCfg('txtEncoding',this.value)"><option value="ansi" ${c.txtEncoding==='ansi'?'selected':''}>ANSI / Windows-1252</option><option value="utf8" ${c.txtEncoding==='utf8'?'selected':''}>UTF-8</option></select></label>
     <label class="f">TXT: nº e tipo da declaração no fim<select onchange="setCfg('txtIncluirDecl',this.value==='1')"><option value="1" ${c.txtIncluirDecl?'selected':''}>Sim</option><option value="0" ${!c.txtIncluirDecl?'selected':''}>Não</option></select></label>
   </div>
+  ${c.layoutXML==='sdas'?`<h2 style="margin-top:16px">Descrição da guia – Santos: 3 linhas (máx. 60 caracteres)</h2>
+  <p class="muted small">No layout de Santos, processo, house, nº e data de registro já vão em campos próprios da guia. Use as linhas para o resto (ex.: referência do cliente e valor CIF).</p>
+  <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start;margin-bottom:10px"><div>${c.linhasSdas.map((l,i)=>`<div class="row" style="margin-bottom:4px"><span class="muted small" style="width:22px">${i+1}</span><input style="flex:1" value="${esc(l)}" maxlength="60" oninput="setLinhaSdas(${i},this.value)"></div>`).join('')}</div>
+  <div><div class="muted small">Prévia:</div><pre class="code" id="prevSdas">${esc(previewSdas())}</pre></div></div>
+  <details><summary class="small muted" style="cursor:pointer">Linhas do layout São Paulo (SINDASP)</summary>`:''}
   <h2 style="margin-top:16px">Descrição da guia – linhas 1 a 15 (máx. 115 caracteres)</h2>
   <p class="muted small">Campos: <span class="kbd">{processo}</span> <span class="kbd">{refCliente}</span> <span class="kbd">{base}</span> <span class="kbd">{valorBase}</span> <span class="kbd">{house}</span> <span class="kbd">{master}</span> <span class="kbd">{tipoDecl}</span> <span class="kbd">{dataRegistro}</span> <span class="kbd">{registro}</span> <span class="kbd">{importador}</span> <span class="kbd">{valorSDA}</span></p>
   <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start"><div>${c.linhas.map((l,i)=>`<div class="row" style="margin-bottom:4px"><span class="muted small" style="width:22px">${i+1}</span><input style="flex:1" value="${esc(l)}" maxlength="115" oninput="setLinha(${i},this.value)"></div>`).join('')}<button class="b" onclick="resetLinhas()">Restaurar padrão</button></div>
-  <div><div class="muted small">Prévia:</div><pre class="code" id="prevLinhas">${esc(previewLinhas())}</pre></div></div></div>
+  <div><div class="muted small">Prévia:</div><pre class="code" id="prevLinhas">${esc(previewLinhas())}</pre></div></div>${c.layoutXML==='sdas'?'</details>':''}</div>
   <div class="card" data-perm="*" data-lockmsg="🔒 Somente administrador"><h2>Zona de cuidado</h2><button class="b d" onclick="if(guard('*')&&confirm('Apagar processos SEM guia gerada (aguardando e distribuídos)? O histórico de guias geradas é mantido.')){log('Exclusão','Limpou processos sem guia');DB.processos=DB.processos.filter(isGerada);save();render();}">Limpar processos sem guia</button></div>`;
 },
 ajuda(){
@@ -1467,7 +1704,7 @@ ajuda(){
    <h3>Passo 3 – Ligar no sistema</h3><ol class="steps small"><li><b>Configurações ▸ Leitura automática ▸ Escolher pasta de relatórios</b> ▸ selecione a pasta <span class="kbd">Relatorios</span> ▸ Permitir.</li>
     <li>Pronto: com o sistema aberto, a pasta é conferida a cada 2 minutos e ao voltar para a aba. Cada arquivo é lido uma única vez. Ao abrir o navegador de novo, clique em <b>Reativar leitura automática</b> (o navegador exige um clique por segurança).</li></ol></div>
   <div class="card"><h2>Conciliação bancária</h2><ol class="steps small"><li>No banco, exporte o extrato em <b>OFX</b> (ou Excel/CSV com Data, Histórico e Valor).</li><li><b>Conciliação bancária ▸ Importar extrato</b>. Opcional: preencha o filtro com a palavra que aparece no histórico do pagamento (ex.: SINDASP).</li><li>Confira as sugestões – as marcadas "confira" têm mais de uma guia com o mesmo valor – e clique <b>Confirmar baixa</b>.</li></ol></div>
-  <div class="card"><h2>Seus dados</h2><p class="small">Ficam no banco de dados do navegador e, se vinculado, no arquivo .json do Dropbox (salvo a cada alteração). Para usar em outro computador: abra este sistema lá ▸ Configurações ▸ <b>Abrir arquivo existente</b> e escolha o mesmo arquivo. Se duas pessoas usarem o mesmo arquivo, o sistema junta as alterações automaticamente (nenhuma guia gerada ou paga é perdida); mesmo assim, prefira que cada etapa seja feita por uma pessoa.</p></div>`;
+  <div class="card"><h2>Seus dados</h2><p class="small">Ficam no banco de dados do navegador e, se vinculado, no arquivo .json do Dropbox (salvo a cada alteração). Para usar em outro computador: abra este sistema lá, clique em <b>📁 Conectar à pasta do sistema</b> e escolha a pasta <b>SDA - Sistema Emissão de Guia</b> – o sistema acha sozinho o banco de dados (pasta Automacao) e a pasta Relatorios. Se duas pessoas usarem o mesmo arquivo, o sistema junta as alterações automaticamente (nenhuma guia gerada ou paga é perdida); mesmo assim, prefira que cada etapa seja feita por uma pessoa.</p></div>`;
 }
 };
 
@@ -1508,10 +1745,12 @@ document.documentElement.style.setProperty('--wm', `url("${LOGO_WM}")`);
 (async function init(){
   await loadDB();
   const h = await idbGet('h','dados');
-  if (h){ try{ if (await h.queryPermission({mode:'readwrite'})==='granted'){ const fl=await h.getFile(); const t=await fl.text(); if(t.trim()){ DB=mergeDB(DB, JSON.parse(t)); takeSnapshot(); } state.fileHandle=h; state.fileMtime=fl.lastModified; state.fileStatus='conectado'; } else state.pendingHandle=h; }catch(e){ state.pendingHandle=h; } }
+  if (h){ try{ if (await h.queryPermission({mode:'readwrite'})==='granted'){ const fl=await h.getFile(); const t=await fl.text(); const o=t.trim()?JSON.parse(t):null; if(o && o.desativado){ bancoDesativado(o); } else { if(o){ DB=mergeDB(DB, o); takeSnapshot(); } state.fileHandle=h; state.fileMtime=fl.lastModified; state.fileStatus='conectado'; } } else state.pendingHandle=h; }catch(e){ state.pendingHandle=h; } }
   const sid=sessionStorage.getItem('sda_uid'); if(sid){ const u=DB.usuarios.find(x=>x.id===sid && x.ativo); if(u) state.user=u; }
-  const hp = await idbGet('h','pasta');
-  if (hp){ try{ if(await hp.queryPermission({mode:'read'})==='granted'){ state.pasta=hp; } else state.pastaPend=hp; }catch(e){ state.pastaPend=hp; } }
+  const hr = await idbGet('h','raiz');
+  if (hr){ try{ if(await hr.queryPermission({mode:'readwrite'})==='granted'){ state.raiz=hr; const {rel, extras}=await lerPastaSistema(hr); if(rel){ state.pasta=rel; } state.extras=extras; } else state.raizPend=hr; }catch(e){ state.raizPend=hr; } }
+  const hp = state.pasta ? null : await idbGet('h','pasta');
+  if (hp && !state.raizPend){ try{ if(await hp.queryPermission({mode:'read'})==='granted'){ state.pasta=hp; } else state.pastaPend=hp; }catch(e){ state.pastaPend=hp; } }
   render();
   if (state.pasta && state.user) setTimeout(()=>scanPasta(false), 1200);
 })();
