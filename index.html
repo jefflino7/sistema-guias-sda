@@ -999,6 +999,9 @@ function linhaExcel(p){ const c=clienteDe(p)||{}; return {'Despachante':despNome
   'Data geração':isoToBR(p.dataGeracao), 'Vencimento':isoToBR(p.venc), 'Data pagamento':isoToBR(p.dataPagamento)}; }
 function sheet(rows, cols){ const ws=XLSX.utils.json_to_sheet(rows); ws['!cols']=(cols||Object.keys(rows[0]||{}).map(k=>({wch:Math.max(10,Math.min(40,k.length+4))}))); return ws; }
 function excelLista(procs, nome){ if(!window.XLSX){ alert('Biblioteca de planilhas não carregou.'); return; } const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sheet(procs.map(linhaExcel)), 'Processos'); XLSX.writeFile(wb, nome); }
+function dataLocal(d){ const z=new Date(d); return `${z.getFullYear()}-${String(z.getMonth()+1).padStart(2,'0')}-${String(z.getDate()).padStart(2,'0')}`; }
+function lotesFiltro(){ if(!state.lf){ const h=dataLocal(new Date()); state.lf={de:h.slice(0,8)+'01', ate:h, desp:''}; } return state.lf; }
+function lotesFiltrados(){ const f=lotesFiltro(); return DB.lotes.filter(l=>{ const d=dataLocal(l.data); return (!f.de||d>=f.de)&&(!f.ate||d<=f.ate)&&(!f.desp||l.despId===f.desp); }); }
 function relLote(id){ const l=DB.lotes.find(x=>x.id===id); const d=despById(l.despId); excelLista(l.procs.map(pid=>DB.processos.find(p=>p.id===pid)).filter(Boolean), `Lote_${fileBase(d)}.xlsx`); }
 
 /* ---------------- clientes / despachantes / config ---------------- */
@@ -1568,12 +1571,35 @@ auditoria(){
 },
 /* ===== LOTES ===== */
 lotes(){
+  const f=lotesFiltro(); const lista=lotesFiltrados();
+  const procsDe=l=>l.procs.map(id=>DB.processos.find(p=>p.id===id)).filter(Boolean);
+  const qtd=lista.reduce((s,l)=>s+l.qtd,0), tot=round2(lista.reduce((s,l)=>s+(l.total||0),0));
+  let pagoV=0, pagoQ=0; lista.forEach(l=>procsDe(l).forEach(p=>{ if(p.pago){ pagoQ++; pagoV+=(p.valorFinal??valorSDA(p)); } })); pagoV=round2(pagoV);
+  const porDesp=despOrdem().map(d=>{ const ls=lista.filter(l=>l.despId===d.id); return {d, n:ls.reduce((s,l)=>s+l.qtd,0), v:round2(ls.reduce((s,l)=>s+(l.total||0),0))}; }).filter(x=>x.n);
+  const hoje=dataLocal(new Date()), ontem=dataLocal(new Date(Date.now()-864e5)), ini=hoje.slice(0,8)+'01';
+  const atalho=(t,de,ate)=>`<button class="b ${f.de===de&&f.ate===ate?'p':''}" onclick="state.lf.de='${de}';state.lf.ate='${ate}';render()">${t}</button>`;
+  const periodo = f.de||f.ate ? (f.de===f.ate ? isoToBR(f.de) : `${f.de?isoToBR(f.de):'início'} a ${f.ate?isoToBR(f.ate):'hoje'}`) : 'todo o período';
   return `<h1>Lotes gerados</h1><p class="lead">Cada arquivo gerado fica guardado: baixe de novo, exporte ou desfaça.</p>
+  <div class="card"><div class="row" style="align-items:flex-end">
+    <label class="f">Gerado de<input type="date" value="${f.de}" onchange="state.lf.de=this.value;render()"></label>
+    <label class="f">até<input type="date" value="${f.ate}" onchange="state.lf.ate=this.value;render()"></label>
+    <label class="f">Despachante<select onchange="state.lf.desp=this.value;render()"><option value="">Todos</option>${despOrdem().map(d=>`<option value="${d.id}" ${f.desp===d.id?'selected':''}>${d.codSDA} – ${esc(d.nome)}</option>`).join('')}</select></label>
+    ${atalho('Hoje',hoje,hoje)}${atalho('Ontem',ontem,ontem)}${atalho('Este mês',ini,hoje)}${atalho('Tudo','','')}
+  </div></div>
+  <div class="chips" style="margin-bottom:12px">
+    <div class="chip"><span class="muted small">Período</span><b>${periodo}</b></div>
+    <div class="chip"><span class="muted small">Lotes</span><b>${lista.length}</b></div>
+    <div class="chip"><span class="muted small">Guias</span><b>${qtd}</b></div>
+    <div class="chip" style="border-left:4px solid var(--accent,#4f46e5)"><span class="muted small">Total gerado</span><b>R$ ${brl(tot)}</b></div>
+    <div class="chip" style="border-left:4px solid #16a34a"><span class="muted small">Pagas (${pagoQ})</span><b>R$ ${brl(pagoV)}</b></div>
+    <div class="chip" style="border-left:4px solid #d97706"><span class="muted small">Em aberto (${qtd-pagoQ})</span><b>R$ ${brl(round2(tot-pagoV))}</b></div>
+  </div>
+  ${porDesp.length>1?`<div class="chips" style="margin-bottom:12px">${porDesp.map(x=>`<div class="chip" style="border-left:4px solid ${despCor(x.d.id)}"><span class="muted small">${x.d.codSDA} – ${esc(x.d.nome)}</span><b>${x.n} • R$ ${brl(x.v)}</b></div>`).join('')}</div>`:''}
   <div class="tbl-wrap"><table><thead><tr><th>Gerado em</th><th>Despachante</th><th>Formato</th><th>Vencimento</th><th class="r">Guias</th><th class="r">Total (R$)</th><th>Processos</th><th>Usuário</th><th></th></tr></thead><tbody>
-  ${DB.lotes.map(l=>`<tr><td>${new Date(l.data).toLocaleString('pt-BR')}</td><td><span class="dot" style="background:${despCor(l.despId)};margin-right:6px"></span>${esc(despNome(l.despId))}</td><td>${l.formato.toUpperCase()}</td><td>${isoToBR(l.venc)}</td><td class="r">${l.qtd}</td><td class="r"><b>${brl(l.total)}</b></td>
+  ${lista.map(l=>`<tr><td>${new Date(l.data).toLocaleString('pt-BR')}</td><td><span class="dot" style="background:${despCor(l.despId)};margin-right:6px"></span>${esc(despNome(l.despId))}</td><td>${l.formato.toUpperCase()}</td><td>${isoToBR(l.venc)}</td><td class="r">${l.qtd}</td><td class="r"><b>${brl(l.total)}</b></td>
     <td class="small" style="white-space:normal;max-width:300px">${l.resumo.map(r=>esc(r.processo)).join(', ')}</td><td>${esc(l.usuario||'')}</td>
-    <td><div class="row"><button class="b" onclick="baixarLote('${l.id}')">⬇ Arquivo</button><button class="b" onclick="txtClientesLote('${l.id}')" title="Cadastro dos clientes deste lote (com endereço) para importar no site do sindicato">👥 Clientes</button><button class="b" data-perm="gerar" onclick="regerarLote('${l.id}')" title="Gera o arquivo de novo com o layout e os dados atuais">🔄 Gerar de novo</button><button class="b" onclick="relLote('${l.id}')">📊 Excel</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')">Desfazer</button></div></td></tr>`).join('') || tabelaVazia(9,'Nenhum lote gerado ainda.')}
-  </tbody></table></div>`;
+    <td><div class="row"><button class="b" onclick="baixarLote('${l.id}')">⬇ Arquivo</button><button class="b" onclick="txtClientesLote('${l.id}')" title="Cadastro dos clientes deste lote (com endereço) para importar no site do sindicato">👥 Clientes</button><button class="b" data-perm="gerar" onclick="regerarLote('${l.id}')" title="Gera o arquivo de novo com o layout e os dados atuais">🔄 Gerar de novo</button><button class="b" onclick="relLote('${l.id}')">📊 Excel</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')">Desfazer</button></div></td></tr>`).join('') || tabelaVazia(9, DB.lotes.length?'Nenhum lote neste período.':'Nenhum lote gerado ainda.')}
+  </tbody></table></div>${lista.length?`<p class="small muted">${lista.length} lote(s) • ${qtd} guia(s) • <b>R$ ${brl(tot)}</b></p>`:''}`;
 },
 /* ===== CLIENTES ===== */
 clientes(){
