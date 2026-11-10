@@ -43,7 +43,7 @@ h3{font-size:13.5px;margin:0 0 8px;color:#334155}
 .kpi .l{color:var(--muted);font-size:12.5px}
 .kpi .s{color:var(--muted);font-size:12px;margin-top:2px}
 .kpi.click{cursor:pointer}.kpi.click:hover{border-color:#b9c4d0}
-.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.acoes-lote{display:flex;gap:4px;flex-wrap:nowrap}.acoes-lote .b{padding:4px 8px;font-size:13px}
 .spacer{flex:1}
 label.f{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}
 input,select,textarea{font:inherit;color:inherit;border:1px solid #c8d0da;border-radius:7px;padding:6px 8px;background:#fff}
@@ -1595,10 +1595,10 @@ lotes(){
     <div class="chip" style="border-left:4px solid #d97706"><span class="muted small">Em aberto (${qtd-pagoQ})</span><b>R$ ${brl(round2(tot-pagoV))}</b></div>
   </div>
   ${porDesp.length>1?`<div class="chips" style="margin-bottom:12px">${porDesp.map(x=>`<div class="chip" style="border-left:4px solid ${despCor(x.d.id)}"><span class="muted small">${x.d.codSDA} – ${esc(x.d.nome)}</span><b>${x.n} • R$ ${brl(x.v)}</b></div>`).join('')}</div>`:''}
-  <div class="tbl-wrap"><table><thead><tr><th>Gerado em</th><th>Despachante</th><th>Formato</th><th>Vencimento</th><th class="r">Guias</th><th class="r">Total (R$)</th><th>Processos</th><th>Usuário</th><th></th></tr></thead><tbody>
-  ${lista.map(l=>`<tr><td>${new Date(l.data).toLocaleString('pt-BR')}</td><td><span class="dot" style="background:${despCor(l.despId)};margin-right:6px"></span>${esc(despNome(l.despId))}</td><td>${l.formato.toUpperCase()}</td><td>${isoToBR(l.venc)}</td><td class="r">${l.qtd}</td><td class="r"><b>${brl(l.total)}</b></td>
-    <td class="small" style="white-space:normal;max-width:300px">${l.resumo.map(r=>esc(r.processo)).join(', ')}</td><td>${esc(l.usuario||'')}</td>
-    <td><div class="row"><button class="b" onclick="baixarLote('${l.id}')">⬇ Arquivo</button><button class="b" onclick="txtClientesLote('${l.id}')" title="Cadastro dos clientes deste lote (com endereço) para importar no site do sindicato">👥 Clientes</button><button class="b" data-perm="gerar" onclick="regerarLote('${l.id}')" title="Gera o arquivo de novo com o layout e os dados atuais">🔄 Gerar de novo</button><button class="b" onclick="relLote('${l.id}')">📊 Excel</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')">Desfazer</button></div></td></tr>`).join('') || tabelaVazia(9, DB.lotes.length?'Nenhum lote neste período.':'Nenhum lote gerado ainda.')}
+  <div class="tbl-wrap"><table><thead><tr><th>Gerado em</th><th>Despachante</th><th>Venc.</th><th class="r">Guias</th><th class="r">Total (R$)</th><th>Processos</th><th>Usuário</th><th></th></tr></thead><tbody>
+  ${lista.map(l=>`<tr><td>${new Date(l.data).toLocaleString('pt-BR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</td><td><span class="dot" style="background:${despCor(l.despId)};margin-right:6px"></span>${esc(despNome(l.despId))}</td><td>${isoToBR(l.venc)}</td><td class="r">${l.qtd}</td><td class="r"><b>${brl(l.total)}</b></td>
+    <td class="small" title="${esc(l.resumo.map(r=>r.processo).join(', '))}">${l.resumo.slice(0,2).map(r=>esc(r.processo)).join(', ')}${l.resumo.length>2?` <span class="badge" style="cursor:help">+${l.resumo.length-2}</span>`:''}</td><td>${esc(l.usuario||'')}</td>
+    <td><div class="acoes-lote"><button class="b" onclick="baixarLote('${l.id}')" title="Baixar o arquivo do lote">⬇ ${l.formato.toUpperCase()}</button><button class="b" onclick="txtClientesLote('${l.id}')" title="Clientes: cadastro dos clientes deste lote (com endereço) para importar no site do sindicato">👥</button><button class="b" data-perm="gerar" onclick="regerarLote('${l.id}')" title="Gerar de novo: refaz o arquivo com o layout e os dados atuais">🔄</button><button class="b" onclick="relLote('${l.id}')" title="Excel com os processos do lote">📊</button><button class="b d" data-perm="*" onclick="desfazerLote('${l.id}')" title="Desfazer o lote (os processos voltam para distribuídos)">✕</button></div></td></tr>`).join('') || tabelaVazia(8, DB.lotes.length?'Nenhum lote neste período.':'Nenhum lote gerado ainda.')}
   </tbody></table></div>${lista.length?`<p class="small muted">${lista.length} lote(s) • ${qtd} guia(s) • <b>R$ ${brl(tot)}</b></p>`:''}`;
 },
 /* ===== CLIENTES ===== */
