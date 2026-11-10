@@ -192,9 +192,9 @@ const DEFAULT_CONFIG = {
     {id:'r1', padrao:'ALFA', tipo:'fixo', valor:1500, desp:'', obs:'Exemplo: contrato com valor fixo'},
     {id:'r2', padrao:'IOTA', tipo:'nao', valor:0, desp:'', obs:'Exemplo: não recolher SDA'},
     {id:'r3', padrao:'KAPPA', tipo:'nao', valor:0, desp:'d4', obs:'Exemplo: não recolher só com o despachante 4'},
-    {id:'r4', padrao:'DELTA', tipo:'fixo', valor:912, desp:'', obs:'Exemplo: SDA fixo no máximo'}], layoutXML: 'sdas', bancoSdas: '001', linhasSdas: ['Ref. Cliente: {refCliente}','Valor {base}(R$): {valorBase}',''], usuario: '', bloqueioMin: 30, alertaRelatorio: true, horaRelatorio: '10:00', padraoArquivo: 'DMDRegistrados', filtroExtrato: '',
+    {id:'r4', padrao:'DELTA', tipo:'fixo', valor:912, desp:'', obs:'Exemplo: SDA fixo no máximo'}], layoutXML: 'sdas', bancoSdas: '001', linhasSdas: ['Ref. Cliente: {refCliente}','Valor {rotuloValor}: {valorBase}',''], usuario: '', bloqueioMin: 30, alertaRelatorio: true, horaRelatorio: '10:00', padraoArquivo: 'DMDRegistrados', filtroExtrato: '',
   txtEncoding: 'ansi', txtIncluirDecl: true,
-  linhas: ['Ref. Processo: {processo}','Ref. Cliente: {refCliente}','Valor {base}(R$): {valorBase}','House: {house}','Data Registro {tipoDecl}: {dataRegistro}','Número Registro {tipoDecl}: {registro}','','','','','','','','','']
+  linhas: ['Ref. Processo: {processo}','Ref. Cliente: {refCliente}','Valor {rotuloValor}: {valorBase}','House: {house}','Data Registro {tipoDecl}: {dataRegistro}','Número Registro {tipoDecl}: {registro}','','','','','','','','','']
 };
 const DEFAULT_DESP = [
   {id:'d1', codSDA:1, nome:'ANA SOUZA', cpf:'52998224725', registro:'9X00001', codSindasp:'101', ativo:true},
@@ -270,6 +270,7 @@ function fixDB(d){
   while(d.config.linhas.length<15) d.config.linhas.push('');
   if(!Array.isArray(d.config.regrasSDA)) d.config.regrasSDA=[];
   if(!Array.isArray(d.config.linhasSdas)) d.config.linhasSdas=DEFAULT_CONFIG.linhasSdas.slice(); while(d.config.linhasSdas.length<3) d.config.linhasSdas.push('');
+  const migVal=t=>String(t||'').replace(/\{base\}\s*\(R\$\)/g,'{rotuloValor}'); d.config.linhas=d.config.linhas.map(migVal); d.config.linhasSdas=d.config.linhasSdas.map(migVal);
   ['processos','clientes','lotes','importacoes','arquivosLidos','conciliados','usuarios','auditoria','recados'].forEach(k=>{ if(!Array.isArray(d[k])) d[k]=[]; });
   if(!d.relExportados || typeof d.relExportados!=='object') d.relExportados={};
   if(!d.excluidos || typeof d.excluidos!=='object') d.excluidos={};
@@ -489,8 +490,12 @@ const STATUS_TXT = {pendente:'Aguardando distribuição', distribuido:'Distribu�
 const isGerada = p => p.status==='gerado';
 function dataBase(p, base){ return base==='registro' ? (p.dataReg||'') : (p.dataGeracao ? p.dataGeracao.slice(0,10) : ''); }
 function ensureCliente(nome){ const k=norm(nome); if(!k) return; if(!DB.clientes.some(c=>norm(c.nome)===k)) DB.clientes.push({id:uid(), nome:nome.trim(), razao:nome.trim(), doc:'', endereco:'', bairro:'', cidade:'', uf:'', cep:'', despPref:''}); }
+const moedaDe = p => String(p.moeda||'').trim().toUpperCase();
+const rotuloValor = p => moedaDe(p) ? `na Moeda (${moedaDe(p)})` : `${p.tipo==='E'?'FOB':'CIF'} (R$)`;
+const valorFmt = p => (moedaDe(p)&&moedaDe(p)!=='BRL'?moedaDe(p)+' ':'')+brl(p.tipo==='E'?p.fob:p.cif);
+const rotuloCurto = p => `${p.tipo==='E'?'FOB':'CIF'} (${moedaDe(p)||'R$'})`;
 function placeholders(p){ const b = p.tipo==='E' ? p.fob : p.cif;
-  return { processo:p.processo, refCliente:p.refCliente, importador:p.importador, base:p.tipo==='E'?'FOB':'CIF', valorBase:brlPlain(b), cif:brlPlain(p.cif), fob:brlPlain(p.fob),
+  return { processo:p.processo, refCliente:p.refCliente, importador:p.importador, base:p.tipo==='E'?'FOB':'CIF', rotuloValor:rotuloValor(p), moeda:moedaDe(p)||'BRL', valorBase:brl(b), cif:brlPlain(p.cif), fob:brlPlain(p.fob),
     house:p.hawb, master:p.mawb, tipoDecl:tipoDecl(p), dataRegistro:isoToBR(p.dataReg), registro:p.registro, valorSDA:brlPlain(valorSDA(p)) }; }
 function linhasGuia(p){ const ph=placeholders(p); return DB.config.linhas.map(t => String(t||'').replace(/\{(\w+)\}/g,(m,k)=> ph[k]!=null ? ph[k] : m).slice(0,115)); }
 
@@ -713,6 +718,7 @@ const COLS = {
   refCliente:['ref do cliente','ref cliente','referencia cliente'],
   hawb:['hawb','house','hbl','conhecimento house'],
   mawb:['mawb','master','mbl'],
+  moeda:['moeda','moeda negociada','cod moeda','codigo moeda','moeda codigo'],
   cif:['cif','valor cif','cif r','vl cif'],
   fob:['fob','valor fob','vmle','vl fob'],
   registro:['codigo de registro','numero registro','n registro','numero da duimp','duimp','di','due','declaracao','numero declaracao'],
@@ -720,7 +726,7 @@ const COLS = {
 };
 function mapHeader(hdr){ const H=hdr.map(normH), map={}; for(const [k,alts] of Object.entries(COLS)){ const i=H.findIndex(h=>alts.includes(h)); if(i>=0) map[k]=i; } return map; }
 /* ---- importação com conferência por processo ---- */
-const CAMPOS_IMP=['importador','refCliente','hawb','mawb','cif','fob','registro','dataReg','tipo'];
+const CAMPOS_IMP=['importador','refCliente','hawb','mawb','cif','fob','moeda','registro','dataReg','tipo'];
 function lerLinhasRelatorio(rows){
   let hi = rows.findIndex(r => r && r.some(c => /importador|exportador/i.test(String(c||'')))); if (hi<0) hi=0;
   const map = mapHeader(rows[hi]||[]); if (map.processo==null) return null;
@@ -731,7 +737,11 @@ function lerLinhasRelatorio(rows){
     const p = { processo:String(g('processo')).trim(), importador:String(g('importador')||'').trim(), refCliente:String(g('refCliente')||'').trim(),
       hawb:String(g('hawb')||'').trim(), mawb:String(g('mawb')||'').trim(), cif:round2(parseNum(g('cif'))), fob:round2(parseNum(g('fob'))),
       registro:String(g('registro')||'').trim(), dataReg:parseDateAny(g('dataReg')) };
-    p.tipo = tipoPorProcesso(p.processo); out.push(p);
+    p.tipo = tipoPorProcesso(p.processo);
+    p.moeda = String(g('moeda')||'').trim().toUpperCase().slice(0,3);
+    // exportação: o relatório traz o valor na moeda da operação na coluna CIF → vai para o campo FOB/valor da exportação
+    if(p.tipo==='E' && !p.fob && p.cif){ p.fob=p.cif; p.cif=0; }
+    out.push(p);
   }
   return out;
 }
@@ -800,11 +810,11 @@ function abrirConferencia(itens, nomeArq){
     if(ex) info = `importado ${ex.importadoEm?new Date(ex.importadoEm).toLocaleDateString('pt-BR'):'—'}${ex.arquivoOrigem?` (${esc(ex.arquivoOrigem)})`:''} • ${STATUS_TXT[statusDe(ex)]}${ex.despId?` – ${esc(despById(ex.despId)?.nome||'')}`:''}${isGerada(ex)?` • guia ${isoToBR(ex.dataGeracao)} R$ ${brl(valorSDA(ex))}`:''}`;
     if(it.difs && it.difs.length) info += ` • <b>mudou: ${it.difs.map(c=>c==='cif'?`CIF ${brl(ex.cif)} → ${brl(p.cif)}`:c==='registro'?`registro ${esc(ex.registro)} → ${esc(p.registro)}`:c).join(', ')}</b>`;
     if(it.outros) info = it.outros.map(x=>`${esc(x.processo)} / ${esc(x.registro)} – ${STATUS_TXT[statusDe(x)]}${isGerada(x)?` (guia ${isoToBR(x.dataGeracao)})`:''}`).join('<br>');
-    return `<tr>${it.incluir!==undefined?`<td><input type="checkbox" ${it.incluir?'checked':''} onchange="state.conf.itens[${i}].incluir=this.checked;atualizaBotaoConf()"></td>`:'<td></td>'}<td><b>${esc(p.processo)}</b></td><td>${esc(p.importador)}${rg?` <span class="badge ${rg.tipo==='nao'?'s-ignorado':'s-distribuido'}">${esc(regraTxt(rg))}</span>`:''}</td><td>${esc(p.registro)}</td><td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="small" style="white-space:normal;min-width:260px">${info}</td></tr>`; };
+    return `<tr>${it.incluir!==undefined?`<td><input type="checkbox" ${it.incluir?'checked':''} onchange="state.conf.itens[${i}].incluir=this.checked;atualizaBotaoConf()"></td>`:'<td></td>'}<td><b>${esc(p.processo)}</b></td><td>${esc(p.importador)}${rg?` <span class="badge ${rg.tipo==='nao'?'s-ignorado':'s-distribuido'}">${esc(regraTxt(rg))}</span>`:''}</td><td>${esc(p.registro)}</td><td class="r">${moedaDe(p)?moedaDe(p)+' ':''}${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="small" style="white-space:normal;min-width:260px">${info}</td></tr>`; };
   const secao=c=>{ const l=por(c); if(!l.length) return ''; const ci=CAT_INFO[c];
     return `<details ${['novo','gerado','aberto','repetidoArq'].includes(c)&&totalRep>0&&c!=='novo'?'':'open'} style="margin-bottom:10px;border:1px solid var(--line);border-radius:10px;padding:8px 12px;${c.startsWith('outra')||c==='regOutroProc'||c==='geradoDif'?'background:#fff8eb':''}">
       <summary style="cursor:pointer"><b>${ci.ic} ${ci.t}: ${l.length}</b> <span class="muted small">– ${ci.d}</span></summary>
-      <div class="tbl-wrap" style="margin-top:8px;max-height:260px"><table><thead><tr><th></th><th>Processo</th><th>Cliente</th><th>Registro</th><th class="r">CIF/FOB</th><th>Situação no sistema</th></tr></thead><tbody>${l.map(it=>linhaProc(it, itens.indexOf(it))).join('')}</tbody></table></div></details>`; };
+      <div class="tbl-wrap" style="margin-top:8px;max-height:260px"><table><thead><tr><th></th><th>Processo</th><th>Cliente</th><th>Registro</th><th class="r">Valor</th><th>Situação no sistema</th></tr></thead><tbody>${l.map(it=>linhaProc(it, itens.indexOf(it))).join('')}</tbody></table></div></details>`; };
   const dl=$('#dlg'); dl.className='painel'; dl.style.maxWidth='1000px';
   dl.innerHTML=`<div class="hd">📥 Conferência da importação – ${esc(nomeArq||'relatório')}</div><div style="padding:14px 18px;max-height:70vh;overflow:auto">
     ${anterior?`<div class="alert w">⚠ Um arquivo com este mesmo nome já foi importado em ${new Date(anterior.data).toLocaleString('pt-BR')}${anterior.usuario?' por '+esc(anterior.usuario):''}.</div>`:''}
@@ -954,7 +964,7 @@ async function gerar(despIds, zip){
     if(validarDesp(d,procs).erros.length){ alert(`Corrija as pendências de ${d.nome} antes de gerar.`); render(); return; }
     const arquivos=montarArquivos(d,procs,venc,formato);
     const lote={id:uid(), data:agora, despId:id, formato, venc, usuario:userName(), procs:procs.map(p=>p.id), total:round2(procs.reduce((s,p)=>s+valorSDA(p),0)), qtd:procs.length, arquivos,
-      resumo:procs.map(p=>({processo:p.processo, importador:p.importador, refCliente:p.refCliente, registro:p.registro, dataReg:p.dataReg, cif:p.cif, fob:p.fob, tipo:p.tipo, valor:valorSDA(p)}))};
+      resumo:procs.map(p=>({processo:p.processo, importador:p.importador, refCliente:p.refCliente, registro:p.registro, dataReg:p.dataReg, cif:p.cif, fob:p.fob, moeda:p.moeda||'', tipo:p.tipo, valor:valorSDA(p)}))};
     procs.forEach(p=>{ p.valorFinal=valorSDA(p); p.status='gerado'; p.dataGeracao=agora; p.venc=venc; p.loteId=lote.id; p.pago=false; p.geradoPor=userName(); });
     lotes.push(lote); todos.push(...arquivos);
   }
@@ -995,7 +1005,7 @@ function marcarPago(ids, pago){
 
 /* ---------------- Excel ---------------- */
 function linhaExcel(p){ const c=clienteDe(p)||{}; return {'Despachante':despNome(p.despId), 'Processo':p.processo, 'Tipo':p.tipo==='E'?'Exportação':'Importação', 'Importador/Exportador':c.razao||p.importador, 'CNPJ/CPF':fmtDoc(c.doc), 'Ref. Cliente':p.refCliente, 'House':p.hawb,
-  'Declaração':tipoDecl(p), 'Nº Registro':p.registro, 'Data Registro':isoToBR(p.dataReg), 'CIF (R$)':p.cif, 'FOB (R$)':p.fob, 'Valor SDA (R$)':valorSDA(p), 'Situação':STATUS_TXT[statusDe(p)],
+  'Declaração':tipoDecl(p), 'Nº Registro':p.registro, 'Data Registro':isoToBR(p.dataReg), 'CIF (R$)':p.cif, 'FOB':p.fob, 'Moeda':moedaDe(p)||'BRL', 'Valor SDA (R$)':valorSDA(p), 'Situação':STATUS_TXT[statusDe(p)],
   'Data geração':isoToBR(p.dataGeracao), 'Vencimento':isoToBR(p.venc), 'Data pagamento':isoToBR(p.dataPagamento)}; }
 function sheet(rows, cols){ const ws=XLSX.utils.json_to_sheet(rows); ws['!cols']=(cols||Object.keys(rows[0]||{}).map(k=>({wch:Math.max(10,Math.min(40,k.length+4))}))); return ws; }
 function excelLista(procs, nome){ if(!window.XLSX){ alert('Biblioteca de planilhas não carregou.'); return; } const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, sheet(procs.map(linhaExcel)), 'Processos'); XLSX.writeFile(wb, nome); }
@@ -1088,7 +1098,7 @@ function detalhe(id){
   const it=(k,v)=>`<div><div class="muted small">${k}</div><div>${v||'—'}</div></div>`;
   $('#dlg').innerHTML=`<div class="hd">${esc(p.processo)} <span class="badge s-${statusDe(p)}">${STATUS_TXT[statusDe(p)]}</span></div><div class="bd">
    ${it('Importador / Exportador',esc(c.razao||p.importador))}${it('CNPJ/CPF',fmtDoc(c.doc))}${it('Ref. Cliente',esc(p.refCliente))}${it('House / Master',esc(p.hawb)+' / '+esc(p.mawb))}
-   ${it(tipoDecl(p),esc(p.registro))}${it('Data registro',isoToBR(p.dataReg))}${it(p.tipo==='E'?'FOB (R$)':'CIF (R$)',brl(p.tipo==='E'?p.fob:p.cif))}${it('Valor SDA (R$)','<b>'+brl(valorSDA(p))+'</b>')}
+   ${it(tipoDecl(p),esc(p.registro))}${it('Data registro',isoToBR(p.dataReg))}${it(rotuloCurto(p),brl(p.tipo==='E'?p.fob:p.cif))}${it('Valor SDA (R$)','<b>'+brl(valorSDA(p))+'</b>')}
    ${it('Despachante',esc(despNome(p.despId)))}${it('Importado em',(p.importadoEm?new Date(p.importadoEm).toLocaleString('pt-BR'):'')+' '+esc(p.arquivoOrigem||''))}
    ${it('Distribuído',p.distribuidoEm?new Date(p.distribuidoEm).toLocaleString('pt-BR')+(p.distribuidoPor?' por '+esc(p.distribuidoPor):''):'')}${it('Guia gerada em',p.dataGeracao?new Date(p.dataGeracao).toLocaleString('pt-BR')+(p.geradoPor?' por '+esc(p.geradoPor):''):'')}
    ${it('Vencimento',isoToBR(p.venc))}${it('Pagamento',p.pago?isoToBR(p.dataPagamento)+(p.pagoPor?' – baixa por '+esc(p.pagoPor):''):'em aberto')}
@@ -1406,7 +1416,7 @@ distribuicao(){
     <button class="b d" ${selArr.length?'':'disabled'} onclick="excluirSel()">Excluir</button>
   </div></div>
   <div class="tbl-wrap"><table><thead><tr>
-    <th><input type="checkbox" ${allSel?'checked':''} onchange="selAll(this.checked)" title="Marcar todos"></th><th>Nº Processo</th><th>Tipo</th><th>Importador / Exportador</th><th>Ref. Cliente</th><th>House</th><th class="r">CIF / FOB (R$)</th><th>Registro</th><th>Data reg.</th><th class="r">Valor SDA</th><th>Despachante</th><th>Situação</th>
+    <th><input type="checkbox" ${allSel?'checked':''} onchange="selAll(this.checked)" title="Marcar todos"></th><th>Nº Processo</th><th>Tipo</th><th>Importador / Exportador</th><th>Ref. Cliente</th><th>House</th><th class="r">CIF / FOB (valor)</th><th>Registro</th><th>Data reg.</th><th class="r">Valor SDA</th><th>Despachante</th><th>Situação</th>
   </tr></thead><tbody>
   ${lista.map(p=>{ const s=statusDe(p), c=clienteDe(p), semDoc=!c||!digits(c.doc), base=p.tipo==='E'?p.fob:p.cif;
     return `<tr class="${state.sel.has(p.id)?'selr':''}">
@@ -1415,7 +1425,7 @@ distribuicao(){
     <td><select class="sm" onchange="setP('${p.id}','tipo',this.value)"><option value="I" ${p.tipo!=='E'?'selected':''}>IMP</option><option value="E" ${p.tipo==='E'?'selected':''}>EXP</option></select></td>
     <td>${esc(p.importador)} ${semDoc?`<span class="badge s-pendente" title="Cadastre o CNPJ em Clientes">sem CNPJ</span>`:''}${(()=>{ const rg=regraDe(p); return rg?` <span class="badge ${rg.tipo==='nao'?'s-ignorado':'s-distribuido'}" title="${esc(rg.obs||'')} – regra especial (Configurações)">${esc(regraTxt(rg))}</span>`:''; })()}</td>
     <td>${esc(p.refCliente)}</td><td>${esc(p.hawb)}</td>
-    <td class="r"><input class="sm num" value="${brl(base)}" onchange="setP('${p.id}','${p.tipo==='E'?'fob':'cif'}',this.value)"></td>
+    <td class="r" style="white-space:nowrap">${moedaDe(p)&&moedaDe(p)!=='BRL'?`<span class="muted small">${moedaDe(p)}</span> `:''}<input class="sm num" value="${brl(base)}" onchange="setP('${p.id}','${p.tipo==='E'?'fob':'cif'}',this.value)"></td>
     <td>${esc(p.registro)} <span class="muted small">${tipoDecl(p)}</span></td><td>${isoToBR(p.dataReg)}</td>
     <td class="r"><input class="sm num" value="${brl(valorSDA(p))}" title="${p.valorManual!=null?'Ajustado manualmente (apague para voltar ao cálculo)':'Calculado pela regra'}" style="${p.valorManual!=null?'border-color:#f59e0b;background:#fffbeb':''}" onchange="setP('${p.id}','valorManual',this.value)"></td>
     <td><select class="sm" onchange="setP('${p.id}','despId',this.value)" style="border-left:4px solid ${p.despId?despCor(p.despId):'#c8d0da'}">${despOptions(p.despId,'—')}</select></td>
@@ -1437,8 +1447,8 @@ gerar(){
     return `<div class="card" style="border-left:4px solid ${despCor(d.id)}"><div class="row"><h2 style="margin:0">${d.codSDA} – ${esc(d.nome)}</h2><span class="muted">SINDASP ${esc(d.codSindasp||'—')} • CPF ${fmtDoc(d.cpf)}</span><span class="spacer"></span><b>${procs.length} guia(s) • R$ ${brl(tot)}</b>
       <button class="b p" ${v.erros.length?'disabled':''} onclick="gerar(['${d.id}'], false)">Gerar arquivo</button></div>
       ${v.erros.length?`<div class="alert e" style="margin-top:10px">${v.erros.join('<br>')}</div>`:''}${v.avisos.length?`<div class="alert w" style="margin-top:10px">${v.avisos.join('<br>')}</div>`:''}
-      <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Processo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Registro</th><th>Data reg.</th><th class="r">CIF/FOB</th><th class="r">Valor SDA</th></tr></thead><tbody>
-      ${procs.map(p=>{ const c=clienteDe(p); return `<tr><td>${esc(p.processo)}</td><td>${esc(c?.razao||p.importador)}</td><td>${c&&digits(c.doc)?fmtDoc(c.doc):'<span class="badge s-pendente">falta</span>'}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td><td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="r"><b>${brl(valorSDA(p))}</b></td></tr>`; }).join('')}
+      <div class="tbl-wrap" style="margin-top:10px"><table><thead><tr><th>Processo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Registro</th><th>Data reg.</th><th class="r">Valor</th><th class="r">Valor SDA</th></tr></thead><tbody>
+      ${procs.map(p=>{ const c=clienteDe(p); return `<tr><td>${esc(p.processo)}</td><td>${esc(c?.razao||p.importador)}</td><td>${c&&digits(c.doc)?fmtDoc(c.doc):'<span class="badge s-pendente">falta</span>'}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td><td class="r">${valorFmt(p)}</td><td class="r"><b>${brl(valorSDA(p))}</b></td></tr>`; }).join('')}
       </tbody></table></div>
       <details style="margin-top:8px"><summary class="small muted" style="cursor:pointer">Ver a descrição da guia (1º processo)</summary><pre class="code" style="margin-top:6px">${esc(linhasAtivas(procs[0]).filter(Boolean).join('\n'))}</pre></details></div>`; }).join('') || `<div class="card empty">Nenhum processo distribuído aguardando guia.</div>`}`;
 },
@@ -1462,12 +1472,12 @@ banco(){
     <button class="b" data-perm="pagar" ${selArr.length?'':'disabled'} onclick="marcarPago([...state.sel],true)">✔ Marcar como paga</button>
     <button class="b" data-perm="*" ${selArr.length?'':'disabled'} onclick="marcarPago([...state.sel],false)">Desfazer pagamento</button>
     <button class="b" onclick="excelLista(filtradosBanco(),'Banco_SDA_${nowStamp()}.xlsx')">📊 Exportar Excel</button></div></div>
-  <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" onchange="filtradosBanco().filter(isGerada).forEach(p=>this.checked?state.sel.add(p.id):state.sel.delete(p.id));render()"></th><th>Processo</th><th>Tipo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Registro</th><th>Data reg.</th><th class="r">CIF/FOB</th><th class="r">Valor SDA</th><th>Despachante</th><th>Gerada em</th><th>Vencimento</th><th>Situação</th></tr></thead><tbody>
+  <div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" onchange="filtradosBanco().filter(isGerada).forEach(p=>this.checked?state.sel.add(p.id):state.sel.delete(p.id));render()"></th><th>Processo</th><th>Tipo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Registro</th><th>Data reg.</th><th class="r">Valor</th><th class="r">Valor SDA</th><th>Despachante</th><th>Gerada em</th><th>Vencimento</th><th>Situação</th></tr></thead><tbody>
   ${lista.slice(0,1500).map(p=>{ const c=clienteDe(p)||{}, s=statusDe(p), venc = s==='gerado' && p.venc && p.venc<todayISO();
     return `<tr class="${state.sel.has(p.id)?'selr':''}"><td>${isGerada(p)?`<input type="checkbox" ${state.sel.has(p.id)?'checked':''} onchange="tog('${p.id}',this.checked)">`:''}</td>
     <td><button class="link" style="color:inherit;font-weight:700;text-decoration:none" onclick="detalhe('${p.id}')">${esc(p.processo)}</button>${p.alerta?' <span title="'+esc(p.alerta)+'">⚠</span>':''}</td>
     <td><span class="badge t-${p.tipo}">${p.tipo==='E'?'EXP':'IMP'}</span></td><td>${esc(c.razao||p.importador)}</td><td>${fmtDoc(c.doc)}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td>
-    <td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="r"><b>${brl(valorSDA(p))}</b></td><td>${p.despId?`<span class="dot" style="background:${despCor(p.despId)};margin-right:5px"></span>`:''}${esc((despById(p.despId)||{}).nome||'—')}</td>
+    <td class="r">${valorFmt(p)}</td><td class="r"><b>${brl(valorSDA(p))}</b></td><td>${p.despId?`<span class="dot" style="background:${despCor(p.despId)};margin-right:5px"></span>`:''}${esc((despById(p.despId)||{}).nome||'—')}</td>
     <td>${isoToBR(p.dataGeracao)}</td><td style="${venc?'color:var(--err);font-weight:600':''}">${isoToBR(p.venc)}${venc?' (vencida)':''}</td>
     <td><span class="badge s-${s}">${STATUS_TXT[s]}${s==='pago'&&p.dataPagamento?' '+isoToBR(p.dataPagamento):''}</span></td></tr>`; }).join('') || tabelaVazia(13,'Nenhum processo com esses filtros.')}
   </tbody></table></div>${lista.length>1500?`<p class="muted small">Mostrando 1.500 de ${lista.length}. Use os filtros ou exporte para Excel.</p>`:''}
@@ -1486,8 +1496,8 @@ relatorio(){
       <button class="b noprint" onclick="relExcel(['${d.id}'])">📊 Excel</button></div>
       <div class="kpis" style="margin:12px 0"><div class="kpi"><div class="l">Guias</div><div class="v">${l.length}</div><div class="s">${l.filter(p=>p.tipo!=='E').length} imp. • ${l.filter(p=>p.tipo==='E').length} exp.</div></div>
         <div class="kpi"><div class="l">Valor total</div><div class="v">R$ ${brl(t)}</div></div><div class="kpi"><div class="l">Pago</div><div class="v" style="color:var(--ok)">R$ ${brl(pg)}</div></div><div class="kpi"><div class="l">Em aberto</div><div class="v" style="color:var(--violet)">R$ ${brl(t-pg)}</div></div></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Gerada em</th><th>Processo</th><th>Tipo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Ref. Cliente</th><th>Registro</th><th>Data reg.</th><th class="r">CIF/FOB</th><th class="r">Valor SDA</th><th>Situação</th></tr></thead><tbody>
-      ${l.map(p=>{ const c=clienteDe(p)||{}; return `<tr><td>${isoToBR(p.dataGeracao)}</td><td>${esc(p.processo)}</td><td>${p.tipo==='E'?'EXP':'IMP'}</td><td>${esc(c.razao||p.importador)}</td><td>${fmtDoc(c.doc)}</td><td>${esc(p.refCliente)}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td><td class="r">${brl(p.tipo==='E'?p.fob:p.cif)}</td><td class="r">${brl(valorSDA(p))}</td><td>${p.pago?'Paga '+isoToBR(p.dataPagamento):'Em aberto'}</td></tr>`; }).join('')}
+      <div class="tbl-wrap"><table><thead><tr><th>Gerada em</th><th>Processo</th><th>Tipo</th><th>Cliente</th><th>CNPJ/CPF</th><th>Ref. Cliente</th><th>Registro</th><th>Data reg.</th><th class="r">Valor</th><th class="r">Valor SDA</th><th>Situação</th></tr></thead><tbody>
+      ${l.map(p=>{ const c=clienteDe(p)||{}; return `<tr><td>${isoToBR(p.dataGeracao)}</td><td>${esc(p.processo)}</td><td>${p.tipo==='E'?'EXP':'IMP'}</td><td>${esc(c.razao||p.importador)}</td><td>${fmtDoc(c.doc)}</td><td>${esc(p.refCliente)}</td><td>${esc(p.registro)}</td><td>${isoToBR(p.dataReg)}</td><td class="r">${valorFmt(p)}</td><td class="r">${brl(valorSDA(p))}</td><td>${p.pago?'Paga '+isoToBR(p.dataPagamento):'Em aberto'}</td></tr>`; }).join('')}
       </tbody><tfoot><tr><td colspan="9">Total ${esc(d.nome)} – ${l.length} guia(s)</td><td class="r">${brl(t)}</td><td></td></tr></tfoot></table></div></div>`; };
   return `<div class="row noprint"><div><h1>Relatório mensal por despachante</h1><p class="lead" style="margin:0">Guias geradas no mês, separadas por despachante. Exporte para Excel ou imprima/salve em PDF.</p></div></div>
   <div class="card noprint" style="margin-top:14px"><div class="row">
@@ -1689,7 +1699,7 @@ config(){
   <div><div class="muted small">Prévia:</div><pre class="code" id="prevSdas">${esc(previewSdas())}</pre></div></div>
   <details><summary class="small muted" style="cursor:pointer">Linhas do layout São Paulo (SINDASP)</summary>`:''}
   <h2 style="margin-top:16px">Descrição da guia – linhas 1 a 15 (máx. 115 caracteres)</h2>
-  <p class="muted small">Campos: <span class="kbd">{processo}</span> <span class="kbd">{refCliente}</span> <span class="kbd">{base}</span> <span class="kbd">{valorBase}</span> <span class="kbd">{house}</span> <span class="kbd">{master}</span> <span class="kbd">{tipoDecl}</span> <span class="kbd">{dataRegistro}</span> <span class="kbd">{registro}</span> <span class="kbd">{importador}</span> <span class="kbd">{valorSDA}</span></p>
+  <p class="muted small">Campos: <span class="kbd">{processo}</span> <span class="kbd">{refCliente}</span> <span class="kbd">{rotuloValor}</span> <span class="kbd">{moeda}</span> <span class="kbd">{base}</span> <span class="kbd">{valorBase}</span> <span class="kbd">{house}</span> <span class="kbd">{master}</span> <span class="kbd">{tipoDecl}</span> <span class="kbd">{dataRegistro}</span> <span class="kbd">{registro}</span> <span class="kbd">{importador}</span> <span class="kbd">{valorSDA}</span></p>
   <div class="grid" style="grid-template-columns:1fr 1fr;align-items:start"><div>${c.linhas.map((l,i)=>`<div class="row" style="margin-bottom:4px"><span class="muted small" style="width:22px">${i+1}</span><input style="flex:1" value="${esc(l)}" maxlength="115" oninput="setLinha(${i},this.value)"></div>`).join('')}<button class="b" onclick="resetLinhas()">Restaurar padrão</button></div>
   <div><div class="muted small">Prévia:</div><pre class="code" id="prevLinhas">${esc(previewLinhas())}</pre></div></div>${c.layoutXML==='sdas'?'</details>':''}</div>
   <div class="card" data-perm="*" data-lockmsg="🔒 Somente administrador"><h2>Zona de cuidado</h2><button class="b d" onclick="if(guard('*')&&confirm('Apagar processos SEM guia gerada (aguardando e distribuídos)? O histórico de guias geradas é mantido.')){log('Exclusão','Limpou processos sem guia');DB.processos=DB.processos.filter(isGerada);save();render();}">Limpar processos sem guia</button></div>`;
