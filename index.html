@@ -138,6 +138,7 @@ body.nologin::before{display:none}
 @media (max-width:860px){body::before{left:50%}}
 @media print{body::before,.topbar{display:none !important}}
 .topbar .sino{position:absolute;right:0;top:-6px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit;font-size:14px;display:flex;align-items:center;gap:6px;color:var(--ink)}
+.tnao td,.tnao th{white-space:normal}
 .topbar .sind{position:absolute;left:0;top:-6px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit;font-size:13px}.topbar .sind:hover{border-color:#a5b4fc}
 .sindcards{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:800px){.sindcards{grid-template-columns:1fr}}
 .sindcard{border:2px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff}.sindcard.atual{border-color:#4f46e5;box-shadow:0 0 0 4px #eef2ff}
@@ -847,6 +848,13 @@ function abrirConferencia(itens, nomeArq){
   const cats=['outraDecl','regOutroProc','geradoDif','gerado','aberto','novo','repetidoArq'];
   const por=c=>itens.filter(i=>i.cat===c);
   const anterior=DB.importacoes.find(i=>i.arquivo && i.arquivo===nomeArq);
+  const semSDA=[], condSDA=[];
+  itens.filter(i=>i.cat!=='repetidoArq').forEach(i=>{ const rs=regrasDoCliente(i.p.importador).filter(r=>r.tipo==='nao'); if(!rs.length) return;
+    if(rs.some(r=>!r.desp)) semSDA.push({p:i.p, r:rs.find(r=>!r.desp)}); else condSDA.push({p:i.p, r:rs[0]}); });
+  const listaNao=(arr)=>`<table class="tnao" style="margin-top:8px;background:#fff;border-radius:8px;width:100%"><thead><tr><th>Processo</th><th>Cliente</th><th>Regra</th><th>Situação</th></tr></thead><tbody>${arr.map(x=>{ const it=itens.find(i=>i.p===x.p); return `<tr><td><b>${esc(x.p.processo)}</b></td><td>${esc(x.p.importador)}</td><td>${esc(x.r.padrao)} – ${esc(regraTxt(x.r))}${x.r.obs?` <span class="muted small">(${esc(x.r.obs)})</span>`:''}</td><td class="small">${it&&it.cat!=='novo'?'já estava no sistema':'novo'}</td></tr>`; }).join('')}</tbody></table>`;
+  const alertaNao = (semSDA.length?`<div class="alert e" style="border-width:2px;font-size:14.5px"><b>⛔ Atenção: ${semSDA.length} processo(s) de cliente(s) que NÃO recolhem SDA – ${[...new Set(semSDA.map(x=>x.r.padrao))].join(', ')}</b><br>Eles entram no sistema como <b>"Não recolher"</b>: não aparecem para distribuir e <b>não geram guia</b>. Não faça SDA para esses processos.${listaNao(semSDA)}</div>`:'')
+    + (condSDA.length?`<div class="alert w"><b>⚠ ${condSDA.length} processo(s) com regra de "não recolher" só para um despachante</b> – não recolhe SDA se for distribuído para o despachante indicado: ${[...new Set(condSDA.map(x=>`${x.r.padrao} → ${despById(x.r.desp)?.nome||'?'}`))].join(', ')}. Para os outros despachantes, a guia sai normal.${listaNao(condSDA)}</div>`:'');
+  state.conf.semSDA=semSDA.length;
   const totalRep=itens.filter(i=>!['novo','repetidoArq'].includes(i.cat)).length, unicos=itens.filter(i=>i.cat!=='repetidoArq').length;
   const linhaProc=(it,i)=>{ const p=it.p, ex=it.ex, rg=regraCliente(p.importador,'');
     let info='';
@@ -860,6 +868,7 @@ function abrirConferencia(itens, nomeArq){
       <div class="tbl-wrap" style="margin-top:8px;max-height:260px"><table><thead><tr><th></th><th>Processo</th><th>Cliente</th><th>Registro</th><th class="r">Valor</th><th>Situação no sistema</th></tr></thead><tbody>${l.map(it=>linhaProc(it, itens.indexOf(it))).join('')}</tbody></table></div></details>`; };
   const dl=$('#dlg'); dl.className='painel'; dl.style.maxWidth='1000px';
   dl.innerHTML=`<div class="hd">📥 Conferência da importação – ${esc(nomeArq||'relatório')}</div><div style="padding:14px 18px;max-height:70vh;overflow:auto">
+    ${alertaNao}
     ${anterior?`<div class="alert w">⚠ Um arquivo com este mesmo nome já foi importado em ${new Date(anterior.data).toLocaleString('pt-BR')}${anterior.usuario?' por '+esc(anterior.usuario):''}.</div>`:''}
     ${totalRep?`<div class="alert ${itens.some(i=>['outraDecl','regOutroProc','geradoDif'].includes(i.cat))?'e':'i'}"><b>${totalRep} de ${unicos} processo(s) desta planilha já estão no sistema.</b> Eles não serão duplicados. Confira abaixo.</div>`:`<div class="alert o">Todos os ${unicos} processo(s) são novos.</div>`}
     <div class="chips" style="margin-bottom:12px">${['novo','aberto','gerado','geradoDif','outraDecl','regOutroProc','repetidoArq'].filter(c=>por(c).length).map(c=>`<div class="chip"><span class="muted small">${CAT_INFO[c].ic} ${CAT_INFO[c].t}</span><b>${por(c).length}</b></div>`).join('')}</div>
@@ -874,7 +883,7 @@ function confirmarImportacao(){
   const {itens, nomeArq}=state.conf; const r=aplicarImportacao(itens, nomeArq, false); $('#dlg').close();
   state.tab='distribuicao'; state.f.status='abertos'; render();
   const sem = DB.clientes.filter(c=>!digits(c.doc)).length;
-  toast(`<b>Importação concluída.</b><br>${r.novos} novo(s), ${r.atual} atualizado(s), ${r.dup} já existente(s) não duplicado(s).`+(r.alertas?`<br>⚠ ${r.alertas} alerta(s) de retificação/duplicidade – veja no Banco de dados.`:'')+(sem?`<br>⚠ ${sem} cliente(s) sem CNPJ.`:''), 7000);
+  toast(`<b>Importação concluída.</b><br>${r.novos} novo(s), ${r.atual} atualizado(s), ${r.dup} já existente(s) não duplicado(s).`+(r.alertas?`<br>⚠ ${r.alertas} alerta(s) de retificação/duplicidade – veja no Banco de dados.`:'')+(state.conf.semSDA?`<br>⛔ ${state.conf.semSDA} processo(s) marcados como "Não recolher" (sem SDA).`:'')+(sem?`<br>⚠ ${sem} cliente(s) sem CNPJ.`:''), 7000);
 }
 function readSheetFile(file, cb){
   if(!window.XLSX){ alert('A biblioteca de planilhas não carregou. Verifique a internet e recarregue a página (F5).'); return; }
