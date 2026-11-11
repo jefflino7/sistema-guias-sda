@@ -138,6 +138,10 @@ body.nologin::before{display:none}
 @media (max-width:860px){body::before{left:50%}}
 @media print{body::before,.topbar{display:none !important}}
 .topbar .sino{position:absolute;right:0;top:-6px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit;font-size:14px;display:flex;align-items:center;gap:6px;color:var(--ink)}
+.topbar .sind{position:absolute;left:0;top:-6px;background:#fff;border:1px solid var(--line);border-radius:20px;padding:5px 12px;cursor:pointer;font:inherit;font-size:13px}.topbar .sind:hover{border-color:#a5b4fc}
+.sindcards{display:grid;grid-template-columns:1fr 1fr;gap:14px}@media(max-width:800px){.sindcards{grid-template-columns:1fr}}
+.sindcard{border:2px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff}.sindcard.atual{border-color:#4f46e5;box-shadow:0 0 0 4px #eef2ff}
+.sindcard h3{margin:0 0 4px;font-size:17px}.sindcard ol{margin:10px 0 12px;padding-left:20px;font-size:13.5px;line-height:1.5}.sindcard ol li{margin-bottom:4px}
 .topbar .sino:hover{border-color:#a5b4fc}.topbar .sino b{background:#dc2626;color:#fff;border-radius:10px;padding:0 7px;font-size:12px}.topbar .sino b.lar{background:#f59e0b;color:#1b2430}
 dialog.painel{max-width:720px}
 .pend{display:flex;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:#fff}
@@ -557,7 +561,7 @@ async function doLogin(){
   if(u.pin===await hashPin(pin,u.salt)){
     state.user=u; state.tries=0; state.lastAct=Date.now(); sessionStorage.setItem('sda_uid',u.id); localStorage.setItem('sda_ultimo_usuario',u.id);
     u.ultimoAcesso=new Date().toISOString(); log('Login',''); save(); if(!canTab(state.tab)) state.tab='dashboard'; render();
-    setTimeout(()=>abrirPainel(true), 400);
+    setTimeout(()=>{ if(precisaPerguntarSindicato()) abrirSindicato(true); else abrirPainel(true); }, 400);
     if(state.pasta && can('importar')) setTimeout(()=>scanPasta(false),800);
   } else { state.tries++; $('#lgPin').value=''; if(state.tries>=5){ state.lockUntil=Date.now()+30000; state.tries=0; err.textContent='PIN incorreto 5 vezes. Aguarde 30 segundos.'; } else err.textContent=`PIN incorreto (${state.tries}/5).`; $('#lgPin').focus(); }
 }
@@ -651,6 +655,45 @@ function abrirPainel(auto){
    ${rs.length>naoLidos.length?`<details style="margin-top:12px"><summary class="small muted" style="cursor:pointer">Recados já lidos (${rs.length-naoLidos.length})</summary>${rs.filter(r=>(r.lidos||{})[u.id]).map(r=>`<div class="recado" style="opacity:.75"><div class="meta">${esc(r.autor)} • ${new Date(r.em).toLocaleString('pt-BR')} • lido em ${new Date(r.lidos[u.id]).toLocaleString('pt-BR')}</div><div class="txt">${esc(r.texto)}</div></div>`).join('')}</details>`:''}
    </div><div class="ft"><span class="muted small" style="margin-right:auto">Abra este painel a qualquer momento pelo 🔔 no topo.</span><button class="b" onclick="$('#dlg').close()">${ps.length?'Lembrar mais tarde':'Fechar'}</button></div>`;
   state.painelPend=ps; if(!dl.open) dl.showModal(); dl.onclose=()=>{ dl.className=''; };
+}
+/* ---- sindicato do dia (São Paulo × Santos) ---- */
+const SIND_INFO={
+  sindasp:{nome:'São Paulo', sigla:'SINDASP', ic:'🏙️', passos:[
+    'Em <b>Gerar guias</b>, gere o lote de cada despachante (XML no layout <b>SINDASP – São Paulo</b>).',
+    'Acesse o <b>site do SINDASP</b>, área do despachante, e envie o arquivo (XML ou TXT) de cada lote.',
+    'Se o site não reconhecer algum cliente ou sair sem endereço: em <b>Lotes gerados</b>, clique em 👥 para baixar o cadastro dos clientes e importe no site em <b>Importação de Cliente</b>.',
+    'Confira valor e vencimento de cada guia no site e emita os boletos.',
+    'Depois do pagamento, dê baixa em <b>Conciliação bancária</b>.']},
+  sdas:{nome:'Santos', sigla:'SDAS', ic:'⚓', passos:[
+    'Em <b>Gerar guias</b>, gere o lote de cada despachante (XML no layout <b>SDAS – Santos</b>, banco 001 – Banco do Brasil).',
+    'Acesse <b>sindicato.sdas.org.br</b>, área do despachante, e envie o XML de cada lote.',
+    'Erro <b>1871</b> ("GUIADECLARACAO não esperado") = arquivo gerado no layout de São Paulo: troque aqui para Santos e, em <b>Lotes gerados</b>, use 🔄 <b>Gerar de novo</b>.',
+    'Guia sem endereço do cliente: confira em <b>Clientes</b> o CNPJ, endereço, cidade e UF e gere o lote de novo.',
+    'Depois do pagamento, dê baixa em <b>Conciliação bancária</b>.']}
+};
+const chaveSind = () => 'sda_sind_'+(state.user?.id||'')+'_'+dataLocal(new Date());
+function precisaPerguntarSindicato(){ if(!can('gerar')) return false; try{ return !localStorage.getItem(chaveSind()); }catch(e){ return true; } }
+function abrirSindicato(doLogin){
+  const atual=DB.config.layoutXML==='sdas'?'sdas':'sindasp', pode=can('arquivo');
+  const pend=DB.processos.filter(p=>p.despId && !isGerada(p) && statusDe(p)!=='ignorado').length;
+  const card=k=>{ const i=SIND_INFO[k], sel=k===atual;
+    return `<div class="sindcard ${sel?'atual':''}"><h3>${i.ic} ${i.nome} <span class="muted small" style="font-weight:400">– ${i.sigla}</span>${sel?' <span class="badge" style="background:#eef2ff;color:#3730a3">configurado agora</span>':''}</h3>
+      <div class="small muted">O que fazer quando as guias forem para ${i.nome}:</div>
+      <ol>${i.passos.map(x=>`<li>${x}</li>`).join('')}</ol>
+      ${pode?`<button class="b ${sel?'p':''}" style="width:100%;padding:10px" onclick="escolherSindicato('${k}',${doLogin?'true':'false'})">${sel?`✔ Continuar com ${i.nome}`:`Trocar para ${i.nome}`}</button>`:''}</div>`; };
+  const dl=$('#dlg'); dl.className='painel'; dl.style.maxWidth='980px';
+  dl.innerHTML=`<div class="hd">🏛️ As guias de SDA de hoje serão para São Paulo ou Santos?</div>
+    <div style="padding:14px 18px;max-height:72vh;overflow:auto">
+    <div class="alert ${atual==='sdas'?'i':'o'}" style="font-size:14.5px">O sistema está configurado para gerar os arquivos de <b>${SIND_INFO[atual].ic} ${SIND_INFO[atual].nome} (${SIND_INFO[atual].sigla})</b>.${pend?` Há <b>${pend}</b> processo(s) distribuído(s) aguardando guia.`:''} ${pode?'Confirme ou troque abaixo.':'Só o Financeiro ou o Administrador podem trocar.'}</div>
+    <div class="sindcards">${card('sindasp')}${card('sdas')}</div>
+    <p class="small muted" style="margin:12px 0 0">💡 Tem guias para os dois no mesmo dia? Gere primeiro os lotes de um, troque o sindicato pelo botão 🏛️ no topo da tela e gere os do outro. A escolha vale para todos os usuários; este aviso aparece uma vez por dia.</p>
+    </div><div class="ft"><button class="b" onclick="$('#dlg').close()">Fechar</button></div>`;
+  dl.onclose=()=>{ dl.className=''; dl.style.maxWidth=''; try{ localStorage.setItem(chaveSind(),'1'); }catch(e){} if(doLogin) setTimeout(()=>abrirPainel(true),200); };
+  if(!dl.open) dl.showModal();
+}
+function escolherSindicato(k, doLogin){
+  if(DB.config.layoutXML!==k){ setCfg('layoutXML',k); if(DB.config.layoutXML!==k) return; toast(`🏛️ Guias agora serão geradas para <b>${SIND_INFO[k].nome} (${SIND_INFO[k].sigla})</b>.`); }
+  $('#dlg').close();
 }
 function resolverPend(i){ const p=state.painelPend[i]; $('#dlg').close(); try{ (new Function(p.acao))(); }catch(e){ console.error(e); } }
 function marcarLido(id){ const r=DB.recados.find(x=>x.id===id); if(!r) return; r.lidos=r.lidos||{}; r.lidos[state.user.id]=new Date().toISOString(); log('Recado lido', r.texto.slice(0,80)); save(); abrirPainel(false); renderNav(); const t=document.querySelector('.topbar'); if(t) render(); }
@@ -1062,7 +1105,7 @@ function delCliente(id){ if(!guard('*')) return; if(!confirm('Excluir este clien
 function setD(id,k,v){ if(!guard('*')){ render(); return; } const d=despById(id); if(!d) return; log('Despachantes', `${d.nome}: ${k} ${d[k]} → ${v}`); if(k==='ativo') d.ativo=v; else if(k==='codSDA') d.codSDA=Number(v)||0; else if(k==='cpf'||k==='codSindasp') d[k]=digits(v); else d[k]=v; save(); render(); }
 function novoDesp(){ if(!guard('*')) return; log('Despachantes','Novo despachante'); const n=Math.max(0,...DB.despachantes.map(d=>d.codSDA))+1; DB.despachantes.push({id:uid(), codSDA:n, nome:'NOVO DESPACHANTE', cpf:'', registro:'', codSindasp:'', ativo:true}); save(); render(); }
 function delDesp(id){ if(!guard('*')) return; if(DB.processos.some(p=>p.despId===id)){ alert('Este despachante tem processos no banco de dados. Desative-o em vez de excluir, para manter o histórico.'); return; } if(!confirm('Excluir despachante?')) return; DB.despachantes=DB.despachantes.filter(d=>d.id!==id); save(); render(); }
-const CFG_LIVRE=['padraoArquivo','filtroExtrato'];
+const CFG_LIVRE=['padraoArquivo','filtroExtrato','layoutXML','bancoSdas'];
 function setCfg(k,v){ if(!guard(CFG_LIVRE.includes(k)?'arquivo':'*')){ render(); return; } if(k==='alertaRelatorio') v=!!v; log('Configuração', `${k}: ${JSON.stringify(DB.config[k])} → ${JSON.stringify(v)}`); const num=['impPerc','impMin','impMax','expFixo','expPerc','expMin','expMax','diasVenc','bloqueioMin']; DB.config[k]= num.includes(k)? parseNum(v) : (k==='txtIncluirDecl'? !!v : v); save(); render(); }
 function setRegra(id,k,v){ if(!guard('*')){ render(); return; } const r=DB.config.regrasSDA.find(x=>x.id===id); if(!r) return; const antes=r[k];
   if(k==='valor') v=round2(parseNum(v)); if(k==='padrao') v=String(v).trim(); r[k]=v; if(k==='tipo'&&v==='fixo'&&!r.valor) r.valor=912;
@@ -1291,7 +1334,7 @@ function render(){
   $('#nav').style.display=''; document.querySelector('.app').classList.remove('nologin');
   if(!canTab(state.tab)) state.tab='dashboard';
   const aviso = desconectado() ? `<div class="alert e noprint" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">⚠ <b>Este computador está desconectado do banco de dados compartilhado.</b> O que for feito aqui fica só neste navegador e não aparece para os outros usuários.<span class="spacer"></span>${(state.pendingHandle||state.raizPend)?`<button class="b p" onclick="reconnectFile()">Reconectar agora</button>`:`<button class="b p" onclick="conectarPasta()">Conectar à pasta do sistema</button>`}</div>` : '';
-  renderNav(); $('#main').innerHTML = `<div class="topbar noprint"><div class="badge" style="position:absolute;left:0;top:-4px;background:#fef3c7;color:#92400e">Demonstração · dados fictícios</div><img src="${LOGO_ICON}" alt="JL"><span>JL SISTEMAS</span>${(()=>{ const c=contagemAvisos(); return `<button class="sino" onclick="abrirPainel(false)" title="Avisos e pendências">🔔${c.n?`<b class="${c.urg?'':'lar'}">${c.n}</b>`:''}</button>`; })()}</div>` + aviso + (VIEWS[state.tab]||VIEWS.dashboard)(); afterRender();
+  renderNav(); $('#main').innerHTML = `<div class="topbar noprint"><div class="badge" style="position:absolute;left:0;top:-4px;background:#fef3c7;color:#92400e">Demonstração · dados fictícios</div><img src="${LOGO_ICON}" alt="JL"><span>JL SISTEMAS</span>${(()=>{ const c=contagemAvisos(); return `<button class="sind" onclick="abrirSindicato(false)" title="Para qual sindicato as guias estão sendo geradas – clique para trocar ou ver o passo a passo">🏛️ ${DB.config.layoutXML==='sdas'?'Santos':'São Paulo'}</button><button class="sino" onclick="abrirPainel(false)" title="Avisos e pendências">🔔${c.n?`<b class="${c.urg?'':'lar'}">${c.n}</b>`:''}</button>`; })()}</div>` + aviso + (VIEWS[state.tab]||VIEWS.dashboard)(); afterRender();
 }
 function loginView(){
   const ativos=DB.usuarios.filter(u=>u.ativo).sort((a,b)=>a.nome.localeCompare(b.nome));
